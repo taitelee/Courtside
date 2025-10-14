@@ -1,0 +1,1 @@
+Run using npx expo start --tunnel please thanks
