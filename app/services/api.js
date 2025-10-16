@@ -1,11 +1,16 @@
-const API = process.env.EXPO_PUBLIC_API_URL;
+const API = process.env.EXPO_PUBLIC_API_URL || "https://patents-conjunction-most-monitored.trycloudflare.com";
+
+console.log("API URL:", API);
+console.log("Environment:", process.env.EXPO_PUBLIC_API_URL);
 
 export async function getQueue(courtId) {
+  console.log("Getting queue for court:", courtId);
   const res = await fetch(`${API}/courts/${courtId}/queue`);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json(); // { queue, version }
 }
 export async function joinQueue(courtId, entryId, display_name) {
+  console.log("Joining queue:", { courtId, entryId, display_name, entryIdType: typeof entryId });
   const res = await fetch(`${API}/courts/${courtId}/join`, {
     method: "POST",
     headers: { "Content-Type":"application/json" },
@@ -15,6 +20,7 @@ export async function joinQueue(courtId, entryId, display_name) {
   return res.json();
 }
 export async function leaveQueue(courtId, entryId) {
+  console.log("Leaving queue:", { courtId, entryId });
   const res = await fetch(`${API}/courts/${courtId}/leave`, {
     method: "POST",
     headers: { "Content-Type":"application/json" },

@@ -1,0 +1,17 @@
+const { getDefaultConfig } = require('expo/metro-config');
+
+const config = getDefaultConfig(__dirname);
+
+// Add proxy configuration for API requests
+config.server = {
+  ...config.server,
+  rewriteRequestUrl: (url) => {
+    // Proxy API requests to local server
+    if (url.startsWith('/api/')) {
+      return url.replace('/api/', 'http://localhost:8080/');
+    }
+    return url;
+  }
+};
+
+module.exports = config;

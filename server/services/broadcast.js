@@ -1,6 +1,11 @@
-import { io } from "../index";
+const { getIO } = require("../io");
 const room = (id) => `court:${id}`;
 
-export function broadcastQueueSync(courtId, queue, version) {
-  io.to(room(courtId)).emit("queue.update", { type: "queue.sync", courtId, queue, version });
+function broadcastQueueSync(courtId, queue, version) {
+  const io = getIO();
+  if (io) {
+    io.to(room(courtId)).emit("queue.update", { type: "queue.sync", courtId, queue, version });
+  }
 }
+
+module.exports = { broadcastQueueSync };

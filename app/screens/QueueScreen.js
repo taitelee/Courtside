@@ -22,13 +22,15 @@ export default function QueueScreen({ route }) {
 
   const handleJoin = async () => {
     const id = randomUUID();
+    console.log("Generated UUID:", id, "Type:", typeof id, "Length:", id.length);
     setMyId(id);
     // optimistic update (optional)
     setQueue(q => [...q, { id, display_name: name, position: q.length+1, status:'active' }]);
     try {
       const data = await joinQueue(courtId, id, name);
       setQueue(data.queue); setVersion(data.version);
-    } catch {
+    } catch (error) {
+      console.error("Join queue error:", error);
       // rollback
     }
   };

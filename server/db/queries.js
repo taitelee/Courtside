@@ -1,14 +1,19 @@
-// server/src/db/queries.ts
-import { Pool } from "pg";
-export const pool = new Pool({
+// server/src/db/queries.js
+const { Pool } = require("pg");
+const pool = new Pool({
   connectionString: process.env.SUPABASE_DB_URL,
-  ssl: { rejectUnauthorized: false }
+  ssl: { rejectUnauthorized: false },
+  // Force IPv4 to avoid IPv6 connectivity issues in WSL
+  family: 4,
+  connectionTimeoutMillis: 10000,
+  idleTimeoutMillis: 30000
 });
+module.exports = { pool, getQueue, joinTx, leaveTx, advanceTx };
 
-export async function getQueue(courtId) {
+async function getQueue(courtId) {
   const { rows: queue } = await pool.query(
-      `SELECT id, display_name, position, status
-      FROM queue_entries WHERE court_id=$1 AND status='active'
+      `SELECT id, display_name, position, joined_at
+      FROM queue_entries WHERE court_id=$1
       ORDER BY position`,
     [courtId]
   );
@@ -19,20 +24,20 @@ export async function getQueue(courtId) {
   return { queue, version: v[0]?.version ?? 0 };
 }
 
-export async function joinTx(courtId, entryId, displayName) {
+async function joinTx(courtId, entryId, displayName) {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
     const nextPos = await client.query(
         `SELECT COALESCE(MAX(position),0)+1 AS pos
-        FROM queue_entries WHERE court_id=$1 AND status='active' FOR UPDATE`,
+        FROM queue_entries WHERE court_id=$1`,
       [courtId]
     );
     const position = nextPos.rows[0].pos;
 
     await client.query(
-        `INSERT INTO queue_entries (id, court_id, display_name, status, position)
-        VALUES ($1,$2,$3,'active',$4)`,
+        `INSERT INTO queue_entries (id, court_id, display_name, position, joined_at)
+        VALUES ($1,$2,$3,$4,NOW())`,
       [entryId, courtId, displayName, position]
     );
 
@@ -53,12 +58,12 @@ export async function joinTx(courtId, entryId, displayName) {
   }
 }
 
-export async function leaveTx(courtId, entryId) {
+async function leaveTx(courtId, entryId) {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
     await client.query(
-      `UPDATE queue_entries SET status='left' WHERE id=$1 AND court_id=$2`,
+      `DELETE FROM queue_entries WHERE id=$1 AND court_id=$2`,
       [entryId, courtId]
     );
 
@@ -67,7 +72,7 @@ export async function leaveTx(courtId, entryId) {
       `
       WITH ordered AS (
         SELECT id, ROW_NUMBER() OVER (ORDER BY joined_at) AS new_pos
-        FROM queue_entries WHERE court_id=$1 AND status='active'
+        FROM queue_entries WHERE court_id=$1
       )
       UPDATE queue_entries q SET position=o.new_pos
       FROM ordered o WHERE q.id=o.id`,
@@ -86,19 +91,18 @@ export async function leaveTx(courtId, entryId) {
   }
 }
 
-export async function advanceTx(courtId) {
+async function advanceTx(courtId) {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
     await client.query(
       `
-      WITH head AS (
+      DELETE FROM queue_entries
+      WHERE court_id=$1 AND id = (
         SELECT id FROM queue_entries
-        WHERE court_id=$1 AND status='active'
-        ORDER BY position LIMIT 1 FOR UPDATE
+        WHERE court_id=$1
+        ORDER BY position LIMIT 1
       )
-      UPDATE queue_entries SET status='served'
-      WHERE id IN (SELECT id FROM head)
     `,
       [courtId]
     );
@@ -107,7 +111,7 @@ export async function advanceTx(courtId) {
       `
       WITH ordered AS (
         SELECT id, ROW_NUMBER() OVER (ORDER BY joined_at) AS new_pos
-        FROM queue_entries WHERE court_id=$1 AND status='active'
+        FROM queue_entries WHERE court_id=$1
       )
       UPDATE queue_entries q SET position=o.new_pos
       FROM ordered o WHERE q.id=o.id`,
@@ -140,8 +144,8 @@ async function bumpVersion(client, courtId) {
 }
 async function getQueueWithin(client, courtId) {
   const { rows } = await client.query(
-      `SELECT id, display_name, position, status
-      FROM queue_entries WHERE court_id=$1 AND status='active'
+      `SELECT id, display_name, position, joined_at
+      FROM queue_entries WHERE court_id=$1
       ORDER BY position`,
     [courtId]
   );
