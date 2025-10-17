@@ -10,7 +10,8 @@ When you run this, there should be a box or popup in your terminal with somethin
 Your quick Tunnel has been created! Visit it at (it may take some time to be reachable):  |
 2025-10-17T21:17:05Z INF |  https://profits-quad-encoding-provided.trycloudflare.com    
 
-Don't cancel this terminal. Make a new terminal and then run:
+COPY AND PASTE THAT LINK (the link that ends in trycloudflare.com). Now go into your .env file and update EXPO_PUBLIC_API_URL to be that link.
+YOU NEED TO DO THIS PLEASE. Ok. Don't cancel this terminal. Make a new terminal and then run:
 
 cd server && node src/index.js
 
