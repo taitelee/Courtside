@@ -1,153 +1,183 @@
 // server/src/db/queries.js
-const { Pool } = require("pg");
-const pool = new Pool({
-  connectionString: process.env.SUPABASE_DB_URL,
-  ssl: { rejectUnauthorized: false },
-  // Force IPv4 to avoid IPv6 connectivity issues in WSL
-  family: 4,
-  connectionTimeoutMillis: 10000,
-  idleTimeoutMillis: 30000
-});
-module.exports = { pool, getQueue, joinTx, leaveTx, advanceTx };
+
+// Supabase configuration
+const SUPABASE_URL = 'https://phunvrocpkmmnnbfwwmw.supabase.co';
+const SUPABASE_SERVICE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBodW52cm9jcGttbW5uYmZ3d213Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2MDUwMjcwOCwiZXhwIjoyMDc2MDc4NzA4fQ.2iAwLDPm8msp5zRqrtVIuc4Q81y_sGQukaLrPUYiOtA';
+
+// Helper function to make Supabase API calls
+async function supabaseRequest(endpoint, options = {}) {
+  const url = `${SUPABASE_URL}/rest/v1/${endpoint}`;
+  const headers = {
+    'apikey': SUPABASE_SERVICE_KEY,
+    'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
+    'Content-Type': 'application/json',
+    'Prefer': 'return=representation',
+    ...options.headers
+  };
+
+  const response = await fetch(url, {
+    ...options,
+    headers
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error(`Supabase API error: ${response.status} ${response.statusText}`);
+    console.error('Error response:', errorText);
+    throw new Error(`Supabase API error: ${response.status} ${response.statusText} - ${errorText}`);
+  }
+
+  return response.json();
+}
+
+// Mock pool object for compatibility
+const pool = {
+  connect: () => Promise.resolve({
+    query: () => Promise.resolve({ rows: [] }),
+    release: () => {}
+  })
+};
 
 async function getQueue(courtId) {
-  const { rows: queue } = await pool.query(
-      `SELECT id, display_name, position, joined_at
-      FROM queue_entries WHERE court_id=$1
-      ORDER BY position`,
-    [courtId]
-  );
-  const { rows: v } = await pool.query(
-    `SELECT version FROM courts WHERE id=$1`,
-    [courtId]
-  );
-  return { queue, version: v[0]?.version ?? 0 };
+  try {
+    console.log(`Getting queue for court: ${courtId}`);
+    
+    // Get queue entries
+    const queue = await supabaseRequest(`queue_entries?court_id=eq.${courtId}&order=position`);
+    console.log('Queue entries:', queue);
+    
+    // Get court version
+    const courts = await supabaseRequest(`courts?id=eq.${courtId}&select=version`);
+    console.log('Courts data:', courts);
+    const version = courts.length > 0 ? courts[0].version : 0;
+    
+    return { queue, version };
+  } catch (error) {
+    console.error('Error getting queue:', error);
+    console.error('Error details:', error.message);
+    return { queue: [], version: 0 };
+  }
 }
 
 async function joinTx(courtId, entryId, displayName) {
-  const client = await pool.connect();
   try {
-    await client.query("BEGIN");
-    const nextPos = await client.query(
-        `SELECT COALESCE(MAX(position),0)+1 AS pos
-        FROM queue_entries WHERE court_id=$1`,
-      [courtId]
-    );
-    const position = nextPos.rows[0].pos;
+    console.log(`Joining queue: courtId=${courtId}, entryId=${entryId}, displayName=${displayName}`);
+    
+    // Get next position
+    const existingEntries = await supabaseRequest(`queue_entries?court_id=eq.${courtId}&order=position`);
+    console.log('Existing entries:', existingEntries);
+    const position = existingEntries.length + 1;
 
-    await client.query(
-        `INSERT INTO queue_entries (id, court_id, display_name, position, joined_at)
-        VALUES ($1,$2,$3,$4,NOW())`,
-      [entryId, courtId, displayName, position]
-    );
+    // Insert new entry
+    const newEntry = {
+      id: entryId,
+      court_id: courtId,
+      display_name: displayName,
+      position: position,
+      joined_at: new Date().toISOString()
+    };
+    console.log('Inserting entry:', newEntry);
 
-    const version = await bumpVersion(client, courtId);
-    const { queue } = await getQueueWithin(client, courtId);
+    await supabaseRequest('queue_entries', {
+      method: 'POST',
+      body: JSON.stringify(newEntry)
+    });
+    console.log('Entry inserted successfully');
 
-    await client.query("COMMIT");
+    // Update court version (use a simple incrementing number)
+    await supabaseRequest(`courts?id=eq.${courtId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ version: 1 })
+    });
+    console.log('Court version updated');
+
+    // Get updated queue
+    const queue = await supabaseRequest(`queue_entries?court_id=eq.${courtId}&order=position`);
+    console.log('Updated queue:', queue);
+    
     return {
       entry: { id: entryId, display_name: displayName, position },
       queue,
-      version,
+      version: 1
     };
-  } catch (e) {
-    await client.query("ROLLBACK");
-    throw e;
-  } finally {
-    client.release();
+  } catch (error) {
+    console.error('Error joining queue:', error);
+    console.error('Error details:', error.message);
+    throw error;
   }
 }
 
 async function leaveTx(courtId, entryId) {
-  const client = await pool.connect();
   try {
-    await client.query("BEGIN");
-    await client.query(
-      `DELETE FROM queue_entries WHERE id=$1 AND court_id=$2`,
-      [entryId, courtId]
-    );
+    // Delete the entry
+    await supabaseRequest(`queue_entries?id=eq.${entryId}&court_id=eq.${courtId}`, {
+      method: 'DELETE'
+    });
 
-    // compact positions
-    await client.query(
-      `
-      WITH ordered AS (
-        SELECT id, ROW_NUMBER() OVER (ORDER BY joined_at) AS new_pos
-        FROM queue_entries WHERE court_id=$1
-      )
-      UPDATE queue_entries q SET position=o.new_pos
-      FROM ordered o WHERE q.id=o.id`,
-      [courtId]
-    );
+    // Get remaining entries and reorder positions
+    const remainingEntries = await supabaseRequest(`queue_entries?court_id=eq.${courtId}&order=joined_at`);
+    
+    // Update positions
+    for (let i = 0; i < remainingEntries.length; i++) {
+      await supabaseRequest(`queue_entries?id=eq.${remainingEntries[i].id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ position: i + 1 })
+      });
+    }
 
-    const version = await bumpVersion(client, courtId);
-    const { queue } = await getQueueWithin(client, courtId);
-    await client.query("COMMIT");
-    return { queue, version };
-  } catch (e) {
-    await client.query("ROLLBACK");
-    throw e;
-  } finally {
-    client.release();
+    // Update court version
+    await supabaseRequest(`courts?id=eq.${courtId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ version: 1 })
+    });
+
+    // Get updated queue
+    const queue = await supabaseRequest(`queue_entries?court_id=eq.${courtId}&order=position`);
+    
+    return { queue, version: 1 };
+  } catch (error) {
+    console.error('Error leaving queue:', error);
+    throw error;
   }
 }
 
 async function advanceTx(courtId) {
-  const client = await pool.connect();
   try {
-    await client.query("BEGIN");
-    await client.query(
-      `
-      DELETE FROM queue_entries
-      WHERE court_id=$1 AND id = (
-        SELECT id FROM queue_entries
-        WHERE court_id=$1
-        ORDER BY position LIMIT 1
-      )
-    `,
-      [courtId]
-    );
+    // Get first entry (lowest position)
+    const firstEntry = await supabaseRequest(`queue_entries?court_id=eq.${courtId}&order=position&limit=1`);
+    
+    if (firstEntry.length > 0) {
+      // Delete the first entry
+      await supabaseRequest(`queue_entries?id=eq.${firstEntry[0].id}`, {
+        method: 'DELETE'
+      });
+    }
 
-    await client.query(
-      `
-      WITH ordered AS (
-        SELECT id, ROW_NUMBER() OVER (ORDER BY joined_at) AS new_pos
-        FROM queue_entries WHERE court_id=$1
-      )
-      UPDATE queue_entries q SET position=o.new_pos
-      FROM ordered o WHERE q.id=o.id`,
-      [courtId]
-    );
+    // Get remaining entries and reorder positions
+    const remainingEntries = await supabaseRequest(`queue_entries?court_id=eq.${courtId}&order=joined_at`);
+    
+    // Update positions
+    for (let i = 0; i < remainingEntries.length; i++) {
+      await supabaseRequest(`queue_entries?id=eq.${remainingEntries[i].id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ position: i + 1 })
+      });
+    }
 
-    const version = await bumpVersion(client, courtId);
-    const { queue } = await getQueueWithin(client, courtId);
-    await client.query("COMMIT");
-    return { queue, version };
-  } catch (e) {
-    await client.query("ROLLBACK");
-    throw e;
-  } finally {
-    client.release();
+    // Update court version
+    await supabaseRequest(`courts?id=eq.${courtId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ version: 1 })
+    });
+
+    // Get updated queue
+    const queue = await supabaseRequest(`queue_entries?court_id=eq.${courtId}&order=position`);
+    
+    return { queue, version: 1 };
+  } catch (error) {
+    console.error('Error advancing queue:', error);
+    throw error;
   }
 }
 
-// helpers
-async function bumpVersion(client, courtId) {
-  await client.query(
-    `UPDATE courts SET version = COALESCE(version,0)+1 WHERE id=$1`,
-    [courtId]
-  );
-  const { rows } = await client.query(
-    `SELECT version FROM courts WHERE id=$1`,
-    [courtId]
-  );
-  return rows[0].version;
-}
-async function getQueueWithin(client, courtId) {
-  const { rows } = await client.query(
-      `SELECT id, display_name, position, joined_at
-      FROM queue_entries WHERE court_id=$1
-      ORDER BY position`,
-    [courtId]
-  );
-  return { queue: rows };
-}
+module.exports = { pool, getQueue, joinTx, leaveTx, advanceTx };

@@ -19,4 +19,4 @@ app.use("/courts", courtsRouter);
 
 io.on("connection", onSocketConnection);
 
-server.listen(8080, () => console.log("API on :8080"));
+server.listen(8080, () => console.log("API on :8080 (using Supabase REST API)"));
