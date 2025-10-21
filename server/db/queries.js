@@ -1,4 +1,6 @@
 // server/src/db/queries.js
+const https = require('https');
+const http = require('http');
 
 // Supabase configuration
 const SUPABASE_URL = 'https://phunvrocpkmmnnbfwwmw.supabase.co';
@@ -6,28 +8,54 @@ const SUPABASE_SERVICE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzd
 
 // Helper function to make Supabase API calls
 async function supabaseRequest(endpoint, options = {}) {
-  const url = `${SUPABASE_URL}/rest/v1/${endpoint}`;
-  const headers = {
-    'apikey': SUPABASE_SERVICE_KEY,
-    'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
-    'Content-Type': 'application/json',
-    'Prefer': 'return=representation',
-    ...options.headers
-  };
+  return new Promise((resolve, reject) => {
+    const url = `${SUPABASE_URL}/rest/v1/${endpoint}`;
+    const headers = {
+      'apikey': SUPABASE_SERVICE_KEY,
+      'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
+      'Content-Type': 'application/json',
+      'Prefer': 'return=representation',
+      ...options.headers
+    };
 
-  const response = await fetch(url, {
-    ...options,
-    headers
+    const requestOptions = {
+      method: options.method || 'GET',
+      headers
+    };
+
+    const req = https.request(url, requestOptions, (res) => {
+      let data = '';
+      
+      res.on('data', (chunk) => {
+        data += chunk;
+      });
+      
+      res.on('end', () => {
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          try {
+            resolve(JSON.parse(data));
+          } catch (e) {
+            resolve(data);
+          }
+        } else {
+          console.error(`Supabase API error: ${res.statusCode} ${res.statusMessage}`);
+          console.error('Error response:', data);
+          reject(new Error(`Supabase API error: ${res.statusCode} ${res.statusMessage} - ${data}`));
+        }
+      });
+    });
+
+    req.on('error', (error) => {
+      console.error('Request error:', error);
+      reject(error);
+    });
+
+    if (options.body) {
+      req.write(options.body);
+    }
+    
+    req.end();
   });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    console.error(`Supabase API error: ${response.status} ${response.statusText}`);
-    console.error('Error response:', errorText);
-    throw new Error(`Supabase API error: ${response.status} ${response.statusText} - ${errorText}`);
-  }
-
-  return response.json();
 }
 
 // Mock pool object for compatibility
@@ -62,6 +90,21 @@ async function getQueue(courtId) {
 async function joinTx(courtId, entryId, displayName) {
   try {
     console.log(`Joining queue: courtId=${courtId}, entryId=${entryId}, displayName=${displayName}`);
+    
+    // First, ensure the court exists in the courts table
+    const existingCourts = await supabaseRequest(`courts?id=eq.${courtId}`);
+    if (existingCourts.length === 0) {
+      console.log('Creating new court:', courtId);
+      await supabaseRequest('courts', {
+        method: 'POST',
+        body: JSON.stringify({
+          id: courtId,
+          name: courtId,
+          version: 1
+        })
+      });
+      console.log('Court created successfully');
+    }
     
     // Get next position
     const existingEntries = await supabaseRequest(`queue_entries?court_id=eq.${courtId}&order=position`);
