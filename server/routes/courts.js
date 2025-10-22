@@ -1,6 +1,6 @@
-import { Router } from "express";
-import { getQueue, joinTx, leaveTx, advanceTx } from "../db/queries";
-import { broadcastQueueSync } from "../services/broadcast";
+const { Router } = require("express");
+const { getQueue, joinTx, leaveTx, advanceTx } = require("../db/queries");
+const { broadcastQueueSync } = require("../services/broadcast");
 
 const r = Router();
 
@@ -13,9 +13,27 @@ r.get("/:id/queue", async (req, res) => {
 r.post("/:id/join", async (req, res) => {
   const { id } = req.params;
   const { entryId, display_name } = req.body; // entryId = client uuid
-  const { queue, version, entry } = await joinTx(id, entryId, display_name);
-  broadcastQueueSync(id, queue, version);
-  res.json({ entry, queue, version });
+  
+  console.log("=== JOIN REQUEST RECEIVED ===");
+  console.log("Time:", new Date().toISOString());
+  console.log("Court ID:", id);
+  console.log("Entry ID:", entryId);
+  console.log("Display Name:", display_name);
+  console.log("Entry ID Type:", typeof entryId);
+  console.log("Request Headers:", req.headers);
+  console.log("Request Body:", req.body);
+  console.log("=============================");
+  
+  try {
+    const { queue, version, entry } = await joinTx(id, entryId, display_name);
+    broadcastQueueSync(id, queue, version);
+    console.log("Join successful, returning:", { entry, queueLength: queue.length, version });
+    res.json({ entry, queue, version });
+  } catch (error) {
+    console.error("Join error:", error.message);
+    console.error("Full error:", error);
+    res.status(500).json({ error: error.message });
+  }
 });
 
 r.post("/:id/leave", async (req, res) => {
@@ -33,4 +51,4 @@ r.post("/:id/advance", async (req, res) => {
   res.json({ queue, version });
 });
 
-export default r;
+module.exports = r;

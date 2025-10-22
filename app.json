@@ -1,5 +1,5 @@
 {
-  "expo": {
+    "expo": {
     "name": "Courtside2",
     "slug": "Courtside2",
     "version": "1.0.0",
@@ -7,6 +7,10 @@
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "newArchEnabled": true,
+    "scheme": "courtside",
+    "packagerOpts": {
+      "config": "metro.config.js"
+    },
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
