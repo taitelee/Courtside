@@ -26,8 +26,9 @@ r.post("/:id/join", async (req, res) => {
   
   try {
     const { queue, version, entry } = await joinTx(id, entryId, display_name);
+    console.log("Broadcasting queue sync");
     broadcastQueueSync(id, queue, version);
-    console.log("Join successful, returning:", { entry, queueLength: queue.length, version });
+    console.log("Join successfulllll, returningg:", { entry, queueLength: queue.length, version });
     res.json({ entry, queue, version });
   } catch (error) {
     console.error("Join error:", error.message);
@@ -39,9 +40,26 @@ r.post("/:id/join", async (req, res) => {
 r.post("/:id/leave", async (req, res) => {
   const { id } = req.params;
   const { entryId } = req.body;
-  const { queue, version } = await leaveTx(id, entryId);
-  broadcastQueueSync(id, queue, version);
-  res.json({ queue, version });
+
+  console.log("=== LEAVE REQUEST RECEIVED ===");
+  console.log("Time:", new Date().toISOString());
+  console.log("Court ID:", id);
+  console.log("Entry ID:", entryId);
+  console.log("Entry ID Type:", typeof entryId);
+  console.log("Request Headers:", req.headers);
+  console.log("Request Body:", req.body);
+  console.log("=============================");
+
+  try {
+    const { queue, version, entry } = await leaveTx(id, entryId);
+    broadcastQueueSync(id, queue, version);
+    console.log("Leave successful, returning:", { entry, queueLength: queue.length, version });
+    res.json({ entry, queue });
+  } catch (error) {
+    console.error("Leave error:", error.message);
+    console.error("Full error:", error);
+    res.status(500).json({ error: error.message });
+  }
 });
 
 r.post("/:id/advance", async (req, res) => {

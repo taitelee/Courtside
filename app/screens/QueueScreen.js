@@ -2,7 +2,7 @@ import * as React from "react";
 import { View, Text, TextInput, Button, FlatList } from "react-native";
 import { getQueue, joinQueue, leaveQueue } from "../services/api";
 import { useQueueRealtime } from "../hooks/useQueueRealtime";
-import { randomUUID } from "expo-crypto"; // or your own uuid lib
+import { randomUUID } from "expo-crypto";
 
 export default function QueueScreen({ route }) {
   const courtId = route.params?.court_id ?? "demo";
@@ -35,11 +35,33 @@ export default function QueueScreen({ route }) {
     }
   };
 
+  // const handleLeave = async () => {
+  //   console.log("Leaving queue with ID:", myId);
+  //   if (!myId) return;
+  //   await leaveQueue(courtId, myId);
+  //   // server will broadcast the new queue; no local change needed
+  // };
+
   const handleLeave = async () => {
-    if (!myId) return;
-    await leaveQueue(courtId, myId);
-    // server will broadcast the new queue; no local change needed
+    if (!myId) {
+      console.warn("No myId set; cannot leave");
+      return;
+    }
+
+    console.log("Leaving queue with ID:", myId);
+
+    setQueue(q => q.filter(e => e.id !== myId));
+
+    try {
+      console.log("Calling leaveQueue API");
+      const data = await leaveQueue(courtId, myId);
+      if (data?.queue) setQueue(data.queue);
+      if (typeof data?.version === "number") setVersion(data.version);
+    } catch (err) {
+      console.error("Leave failed:", err);
+    }
   };
+
 
   return (
     <View style={{ flex:1, padding:16 }}>
