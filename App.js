@@ -4,6 +4,7 @@ import { CameraView, useCameraPermissions } from 'expo-camera';
 import { useState, useEffect } from 'react';
 import { getQueue, joinQueue, leaveQueue } from './app/services/api';
 import { getSocket } from './app/services/realtime';
+import { useQueueRealtime } from './app/hooks/useQueueRealtime';
 
 export default function App() {
   const [permission, requestPermission] = useCameraPermissions();
@@ -23,35 +24,22 @@ export default function App() {
     scanned 
   });
 
-  // Set up real-time updates when in queue view
-  useEffect(() => {
-    if (currentView === 'queue' && currentCourt) {
-      const socket = getSocket();
-      
-      const handleQueueUpdate = (data) => {
-        if (data.courtId === currentCourt) {
-          setQueue(data.queue);
-          // Update user entry if it still exists
-          const updatedUserEntry = data.queue.find(item => item.id === userEntry?.id);
-          if (updatedUserEntry) {
-            setUserEntry(updatedUserEntry);
-          } else {
-            // User was removed from queue
-            setUserEntry(null);
-          }
-        }
-      };
-
-      socket.on('queue_sync', handleQueueUpdate);
-      
-      // Load initial queue
-      loadQueue(currentCourt);
-
-      return () => {
-        socket.off('queue_sync', handleQueueUpdate);
-      };
+  // Set up real-time updates when in queue view using the improved hook
+  const handleQueueSync = (newQueue, version) => {
+    console.log('Received queue sync:', { queueLength: newQueue.length, version });
+    setQueue(newQueue);
+    // Update user entry if it still exists
+    const updatedUserEntry = newQueue.find(item => item.id === userEntry?.id);
+    if (updatedUserEntry) {
+      setUserEntry(updatedUserEntry);
+    } else {
+      // User was removed from queue
+      setUserEntry(null);
     }
-  }, [currentView, currentCourt, userEntry?.id]);
+  };
+
+  // Use the improved real-time hook
+  useQueueRealtime(currentCourt, handleQueueSync);
 
   const handleRequestPermission = async () => {
     console.log('Requesting camera permission...');
