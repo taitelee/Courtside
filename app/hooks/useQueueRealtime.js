@@ -3,6 +3,8 @@ import { getSocket } from "../services/realtime";
 
 export function useQueueRealtime(courtId, onSync) {
   useEffect(() => {
+    if (!courtId) return; // Don't subscribe if no courtId
+    
     const s = getSocket();
     s.emit("subscribe", { courtId });
 

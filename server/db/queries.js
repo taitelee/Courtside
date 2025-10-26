@@ -70,12 +70,15 @@ async function getQueue(courtId) {
   try {
     console.log(`Getting queue for court: ${courtId}`);
     
+    // URL encode the courtId for the API call
+    const encodedCourtId = encodeURIComponent(courtId);
+    
     // Get queue entries
-    const queue = await supabaseRequest(`queue_entries?court_id=eq.${courtId}&order=position`);
+    const queue = await supabaseRequest(`queue_entries?court_id=eq.${encodedCourtId}&order=position`);
     console.log('Queue entries:', queue);
     
     // Get court version
-    const courts = await supabaseRequest(`courts?id=eq.${courtId}&select=version`);
+    const courts = await supabaseRequest(`courts?id=eq.${encodedCourtId}&select=version`);
     console.log('Courts data:', courts);
     const version = courts.length > 0 ? courts[0].version : 0;
     
@@ -91,8 +94,11 @@ async function joinTx(courtId, entryId, displayName) {
   try {
     console.log(`Joining queue: courtId=${courtId}, entryId=${entryId}, displayName=${displayName}`);
     
+    // URL encode the courtId for the API call
+    const encodedCourtId = encodeURIComponent(courtId);
+    
     // First, ensure the court exists in the courts table
-    const existingCourts = await supabaseRequest(`courts?id=eq.${courtId}`);
+    const existingCourts = await supabaseRequest(`courts?id=eq.${encodedCourtId}`);
     if (existingCourts.length === 0) {
       console.log('Creating new court:', courtId);
       await supabaseRequest('courts', {
@@ -106,9 +112,28 @@ async function joinTx(courtId, entryId, displayName) {
       console.log('Court created successfully');
     }
     
-    // Get next position
-    const existingEntries = await supabaseRequest(`queue_entries?court_id=eq.${courtId}&order=position`);
+    // Get existing entries
+    const existingEntries = await supabaseRequest(`queue_entries?court_id=eq.${encodedCourtId}&order=position`);
     console.log('Existing entries:', existingEntries);
+    
+    // Check if this device is already in the queue
+    // Extract device ID from display name (format: "Player 123 (abc123)")
+    const deviceIdMatch = displayName.match(/\(([^)]+)\)/);
+    const deviceId = deviceIdMatch ? deviceIdMatch[1] : null;
+    
+    const existingDeviceEntry = deviceId ? existingEntries.find(entry => 
+      entry.display_name.includes(deviceId)
+    ) : null;
+    
+    if (existingDeviceEntry) {
+      console.log('Device already in queue, returning existing entry');
+      return {
+        entry: { id: existingDeviceEntry.id, display_name: existingDeviceEntry.display_name, position: existingDeviceEntry.position },
+        queue: existingEntries,
+        version: 1
+      };
+    }
+    
     const position = existingEntries.length + 1;
 
     // Insert new entry
@@ -128,14 +153,14 @@ async function joinTx(courtId, entryId, displayName) {
     console.log('Entry inserted successfully');
 
     // Update court version (use a simple incrementing number)
-    await supabaseRequest(`courts?id=eq.${courtId}`, {
+    await supabaseRequest(`courts?id=eq.${encodedCourtId}`, {
       method: 'PATCH',
       body: JSON.stringify({ version: 1 })
     });
     console.log('Court version updated');
 
     // Get updated queue
-    const queue = await supabaseRequest(`queue_entries?court_id=eq.${courtId}&order=position`);
+    const queue = await supabaseRequest(`queue_entries?court_id=eq.${encodedCourtId}&order=position`);
     console.log('Updated queue:', queue);
     
     return {
@@ -152,13 +177,15 @@ async function joinTx(courtId, entryId, displayName) {
 
 async function leaveTx(courtId, entryId) {
   try {
+    const encodedCourtId = encodeURIComponent(courtId);
+    
     // Delete the entry
-    await supabaseRequest(`queue_entries?id=eq.${entryId}&court_id=eq.${courtId}`, {
+    await supabaseRequest(`queue_entries?id=eq.${entryId}&court_id=eq.${encodedCourtId}`, {
       method: 'DELETE'
     });
 
     // Get remaining entries and reorder positions
-    const remainingEntries = await supabaseRequest(`queue_entries?court_id=eq.${courtId}&order=joined_at`);
+    const remainingEntries = await supabaseRequest(`queue_entries?court_id=eq.${encodedCourtId}&order=joined_at`);
     
     // Update positions
     for (let i = 0; i < remainingEntries.length; i++) {
@@ -169,13 +196,13 @@ async function leaveTx(courtId, entryId) {
     }
 
     // Update court version
-    await supabaseRequest(`courts?id=eq.${courtId}`, {
+    await supabaseRequest(`courts?id=eq.${encodedCourtId}`, {
       method: 'PATCH',
       body: JSON.stringify({ version: 1 })
     });
 
     // Get updated queue
-    const queue = await supabaseRequest(`queue_entries?court_id=eq.${courtId}&order=position`);
+    const queue = await supabaseRequest(`queue_entries?court_id=eq.${encodedCourtId}&order=position`);
     
     return { queue, version: 1 };
   } catch (error) {
@@ -186,8 +213,10 @@ async function leaveTx(courtId, entryId) {
 
 async function advanceTx(courtId) {
   try {
+    const encodedCourtId = encodeURIComponent(courtId);
+    
     // Get first entry (lowest position)
-    const firstEntry = await supabaseRequest(`queue_entries?court_id=eq.${courtId}&order=position&limit=1`);
+    const firstEntry = await supabaseRequest(`queue_entries?court_id=eq.${encodedCourtId}&order=position&limit=1`);
     
     if (firstEntry.length > 0) {
       // Delete the first entry
@@ -197,7 +226,7 @@ async function advanceTx(courtId) {
     }
 
     // Get remaining entries and reorder positions
-    const remainingEntries = await supabaseRequest(`queue_entries?court_id=eq.${courtId}&order=joined_at`);
+    const remainingEntries = await supabaseRequest(`queue_entries?court_id=eq.${encodedCourtId}&order=joined_at`);
     
     // Update positions
     for (let i = 0; i < remainingEntries.length; i++) {
@@ -208,13 +237,13 @@ async function advanceTx(courtId) {
     }
 
     // Update court version
-    await supabaseRequest(`courts?id=eq.${courtId}`, {
+    await supabaseRequest(`courts?id=eq.${encodedCourtId}`, {
       method: 'PATCH',
       body: JSON.stringify({ version: 1 })
     });
 
     // Get updated queue
-    const queue = await supabaseRequest(`queue_entries?court_id=eq.${courtId}&order=position`);
+    const queue = await supabaseRequest(`queue_entries?court_id=eq.${encodedCourtId}&order=position`);
     
     return { queue, version: 1 };
   } catch (error) {
