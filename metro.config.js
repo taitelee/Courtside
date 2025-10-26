@@ -14,4 +14,15 @@ config.server = {
   }
 };
 
+// Ensure proper module resolution and exclude server files
+config.resolver = {
+  ...config.resolver,
+  alias: {
+    ...config.resolver.alias,
+  },
+  blockList: [
+    /server\/.*/,
+  ],
+};
+
 module.exports = config;

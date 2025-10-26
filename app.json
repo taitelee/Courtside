@@ -1,16 +1,12 @@
 {
-    "expo": {
+  "expo": {
     "name": "Courtside2",
     "slug": "Courtside2",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
-    "newArchEnabled": true,
     "scheme": "courtside",
-    "packagerOpts": {
-      "config": "metro.config.js"
-    },
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
@@ -27,7 +23,6 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "edgeToEdgeEnabled": true,
       "permissions": ["CAMERA"]
     },
     "web": {

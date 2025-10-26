@@ -1,8 +1,8 @@
 import { StatusBar } from 'expo-status-bar';
-import { StyleSheet, Text, View, Alert, TouchableOpacity, FlatList } from 'react-native';
+import { StyleSheet, Text, View, Alert, TouchableOpacity, FlatList, Modal } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { useState, useEffect } from 'react';
-import { getQueue, joinQueue } from './app/services/api';
+import { getQueue, joinQueue, leaveQueue } from './app/services/api';
 import { getSocket } from './app/services/realtime';
 
 export default function App() {
@@ -12,6 +12,10 @@ export default function App() {
   const [currentCourt, setCurrentCourt] = useState(null);
   const [queue, setQueue] = useState([]);
   const [userEntry, setUserEntry] = useState(null);
+  const [showJoinDialog, setShowJoinDialog] = useState(false);
+  const [pendingCourtId, setPendingCourtId] = useState(null);
+  const [showLeaveDialog, setShowLeaveDialog] = useState(false);
+  const [isJoining, setIsJoining] = useState(false);
 
   console.log('App state:', { 
     permission: permission?.granted, 
@@ -108,34 +112,33 @@ export default function App() {
       courtId;
     
     console.log('Showing join dialog for court:', courtId);
-    
-    Alert.alert(
-      'Join Court',
-      `Do you want to join queue for:\n${displayCourtId}?`,
-      [
-        { 
-          text: 'Cancel', 
-          style: 'cancel',
-          onPress: () => {
-            console.log('User cancelled join');
-            setScanned(false); // Reset scanner so they can scan again
-            // Don't do anything else, just return to scanner
-          }
-        },
-        { 
-          text: 'Join Queue', 
-          onPress: () => {
-            console.log('User confirmed join for court:', courtId);
-            handleJoinQueue(courtId);
-          }
-        }
-      ]
-    );
+    setPendingCourtId(courtId);
+    setShowJoinDialog(true);
   };
 
-  const handleJoinQueue = async (courtId) => {
+  const handleCancelJoin = () => {
+    console.log('User cancelled join');
+    setShowJoinDialog(false);
+    setPendingCourtId(null);
+    setScanned(false); // Reset scanner so they can scan again
+  };
+
+  const handleConfirmJoin = () => {
+    console.log('User confirmed join for court:', pendingCourtId);
+    setShowJoinDialog(false);
+    if (pendingCourtId) {
+      handleJoinQueue(pendingCourtId);
+    }
+    setPendingCourtId(null);
+  };
+
+  const handleJoinQueue = async (courtId, retryCount = 0) => {
     try {
-      console.log('Starting join queue process for court:', courtId);
+      if (retryCount === 0) {
+        setIsJoining(true);
+      }
+      
+      console.log('Starting join queue process for court:', courtId, retryCount > 0 ? `(retry ${retryCount})` : '');
       
       // Generate a proper UUID for the entry ID
       const entryId = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
@@ -158,12 +161,25 @@ export default function App() {
       setUserEntry(result.entry);
       setCurrentView('queue');
       setScanned(false); // Reset scanner state
+      setIsJoining(false);
       
       console.log('Switched to queue view');
       
       // Don't show success alert, just switch to queue view
     } catch (error) {
       console.error('Error joining queue:', error);
+      
+      // Retry logic for network errors
+      if (error.message.includes('Network request failed') && retryCount < 2) {
+        console.log(`Network error, retrying in 1 second... (attempt ${retryCount + 1})`);
+        setTimeout(() => {
+          handleJoinQueue(courtId, retryCount + 1);
+        }, 1000);
+        return;
+      }
+      
+      // Show error after retries or for other errors
+      setIsJoining(false);
       Alert.alert('Error', `Failed to join queue: ${error.message}`);
       setScanned(false); // Reset scanner on error
     }
@@ -185,12 +201,45 @@ export default function App() {
     setUserEntry(null);
   };
 
+  const handleLeaveQueue = () => {
+    setShowLeaveDialog(true);
+  };
+
+  const handleConfirmLeave = async () => {
+    try {
+      console.log('Leaving queue for court:', currentCourt);
+      
+      if (!currentCourt || !userEntry) {
+        console.log('No court or user entry to leave');
+        return;
+      }
+
+      // Leave the queue
+      await leaveQueue(currentCourt, userEntry.id);
+      
+      console.log('Successfully left queue');
+      
+      // Go back to scanner
+      goBackToScanner();
+      
+    } catch (error) {
+      console.error('Error leaving queue:', error);
+      Alert.alert('Error', `Failed to leave queue: ${error.message}`);
+    } finally {
+      setShowLeaveDialog(false);
+    }
+  };
+
+  const handleCancelLeave = () => {
+    setShowLeaveDialog(false);
+  };
+
   // Queue View Component
   const renderQueueView = () => (
     <View style={styles.queueContainer}>
       <View style={styles.queueHeader}>
         <Text style={styles.queueTitle}>🏀 Court Queue</Text>
-        <Text style={styles.courtId}>{currentCourt.length > 60 ? 
+        <Text style={styles.courtId}>{currentCourt && currentCourt.length > 60 ? 
           `${currentCourt.substring(0, 57)}...` : 
           currentCourt}</Text>
         <TouchableOpacity style={styles.backButton} onPress={goBackToScanner}>
@@ -228,6 +277,15 @@ export default function App() {
       <TouchableOpacity style={styles.refreshButton} onPress={() => loadQueue(currentCourt)}>
         <Text style={styles.refreshButtonText}>🔄 Refresh Queue</Text>
       </TouchableOpacity>
+
+      {userEntry && (
+        <TouchableOpacity 
+          style={[styles.refreshButton, { backgroundColor: '#dc3545' }]} 
+          onPress={handleLeaveQueue}
+        >
+          <Text style={styles.refreshButtonText}>🚪 Leave Queue</Text>
+        </TouchableOpacity>
+      )}
       
       {!currentCourt && (
         <TouchableOpacity 
@@ -261,6 +319,77 @@ export default function App() {
   return (
     <View style={styles.container}>
       {currentView === 'scanner' ? renderScannerView() : renderQueueView()}
+      
+      {/* Custom Join Dialog Modal */}
+      <Modal
+        visible={showJoinDialog}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={handleCancelJoin}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Join Court</Text>
+            <Text style={styles.modalMessage}>
+              Do you want to join queue for:{'\n'}
+              {pendingCourtId && pendingCourtId.length > 50 ? 
+                `${pendingCourtId.substring(0, 47)}...` : 
+                pendingCourtId}?
+            </Text>
+            <View style={styles.modalButtons}>
+              <TouchableOpacity 
+                style={[styles.modalButton, styles.cancelButton]} 
+                onPress={handleCancelJoin}
+                disabled={isJoining}
+              >
+                <Text style={styles.cancelButtonText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity 
+                style={[styles.modalButton, styles.joinButton, isJoining && styles.disabledButton]} 
+                onPress={handleConfirmJoin}
+                disabled={isJoining}
+              >
+                <Text style={styles.joinButtonText}>
+                  {isJoining ? 'Joining...' : 'Join Queue'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Leave Queue Confirmation Modal */}
+      <Modal
+        visible={showLeaveDialog}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={handleCancelLeave}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Leave Queue</Text>
+            <Text style={styles.modalMessage}>
+              Are you sure you want to leave the queue?{'\n'}
+              You will lose your position in line.
+            </Text>
+            <View style={styles.modalButtons}>
+              <TouchableOpacity 
+                style={[styles.modalButton, styles.cancelButton]} 
+                onPress={handleCancelLeave}
+              >
+                <Text style={styles.cancelButtonText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity 
+                style={[styles.modalButton, styles.leaveButton]} 
+                onPress={handleConfirmLeave}
+              >
+                <Text style={styles.leaveButtonText}>Leave Queue</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+      
       <StatusBar style="auto" />
     </View>
   );
@@ -424,5 +553,75 @@ const styles = StyleSheet.create({
     color: 'white',
     fontSize: 16,
     fontWeight: 'bold',
+  },
+  // Modal Styles
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalContent: {
+    backgroundColor: 'white',
+    borderRadius: 15,
+    padding: 20,
+    margin: 20,
+    minWidth: 300,
+    maxWidth: 400,
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#333',
+    textAlign: 'center',
+    marginBottom: 15,
+  },
+  modalMessage: {
+    fontSize: 16,
+    color: '#666',
+    textAlign: 'center',
+    marginBottom: 20,
+    lineHeight: 22,
+  },
+  modalButtons: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  modalButton: {
+    flex: 1,
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  cancelButton: {
+    backgroundColor: '#f5f5f5',
+    borderWidth: 1,
+    borderColor: '#ddd',
+  },
+  joinButton: {
+    backgroundColor: '#667eea',
+  },
+  leaveButton: {
+    backgroundColor: '#dc3545',
+  },
+  cancelButtonText: {
+    color: '#666',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  joinButtonText: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  leaveButtonText: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  disabledButton: {
+    opacity: 0.6,
   },
 });
