@@ -16,33 +16,67 @@ import { CameraView, CameraType, useCameraPermissions } from 'expo-camera';
 import { joinQueue, leaveQueue, getQueue } from './app/services/api';
 import { useQueueRealtime } from './app/hooks/useQueueRealtime';
 import { Ionicons } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const { width, height } = Dimensions.get('window');
 
 export default function App() {
-  const [currentView, setCurrentView] = useState('welcome'); // welcome, scanner, queue
+  const [currentView, setCurrentView] = useState('welcome'); // welcome, scanner, nameInput, queue
   const [scanned, setScanned] = useState(false);
   const [scanComplete, setScanComplete] = useState(false); // New state to track if scan is complete
   const [courtId, setCourtId] = useState(null);
   const [queue, setQueue] = useState([]);
   const [isJoining, setIsJoining] = useState(false);
   const [userEntry, setUserEntry] = useState(null);
-  const [deviceId] = useState(() => {
-    // Generate a more stable device ID that persists across app restarts
-    // Use a combination of device characteristics for better uniqueness
-    const timestamp = Date.now().toString(36);
-    const random = Math.random().toString(36).substr(2, 8);
-    const sessionId = `${timestamp}_${random}`;
-    
-    // Store in AsyncStorage for persistence across app restarts
-    try {
-      // For now, just use the session ID, but this could be enhanced with AsyncStorage
-      return `device_${sessionId}`;
-    } catch (error) {
-      console.log('Error generating device ID:', error);
-      return `device_${sessionId}`;
-    }
-  });
+  const [playerName, setPlayerName] = useState('');
+  const [deviceId, setDeviceId] = useState(null);
+
+  // Load or generate persistent device ID
+  useEffect(() => {
+    const loadOrGenerateDeviceId = async () => {
+      try {
+        // Try to load existing device ID from storage
+        const storedDeviceId = await AsyncStorage.getItem('deviceId');
+        
+        if (storedDeviceId) {
+          console.log('Loaded existing device ID:', storedDeviceId);
+          setDeviceId(storedDeviceId);
+        } else {
+          // Generate new device ID if none exists
+          const timestamp = Date.now().toString(36);
+          const random1 = Math.random().toString(36).substr(2, 9);
+          const random2 = Math.random().toString(36).substr(2, 9);
+          const random3 = Math.random().toString(36).substr(2, 9);
+          const random4 = Math.random().toString(36).substr(2, 9);
+          
+          const uniqueId = `${timestamp}_${random1}_${random2}_${random3}_${random4}`;
+          const newDeviceId = `device_${uniqueId}`;
+          
+          console.log('Generated new device ID:', newDeviceId);
+          
+          // Store the new device ID
+          await AsyncStorage.setItem('deviceId', newDeviceId);
+          setDeviceId(newDeviceId);
+        }
+      } catch (error) {
+        console.error('Error loading/generating device ID:', error);
+        // Fallback to generating a new one
+        const timestamp = Date.now().toString(36);
+        const random1 = Math.random().toString(36).substr(2, 9);
+        const random2 = Math.random().toString(36).substr(2, 9);
+        const random3 = Math.random().toString(36).substr(2, 9);
+        const random4 = Math.random().toString(36).substr(2, 9);
+        
+        const uniqueId = `${timestamp}_${random1}_${random2}_${random3}_${random4}`;
+        const fallbackDeviceId = `device_${uniqueId}`;
+        
+        console.log('Using fallback device ID:', fallbackDeviceId);
+        setDeviceId(fallbackDeviceId);
+      }
+    };
+
+    loadOrGenerateDeviceId();
+  }, []);
 
   const [permission, requestPermission] = useCameraPermissions();
 
@@ -64,43 +98,95 @@ export default function App() {
       console.log('Scan blocked - already scanned or processing:', { scanned, scanComplete, isJoining });
       return;
     }
+
+    // Ensure device ID is loaded before proceeding
+    if (!deviceId) {
+      console.log('Device ID not loaded yet, waiting...');
+      return;
+    }
     
-    console.log('QR Code scanned:', { data, type });
+    console.log('QR Code scanned:', { data, type, dataType: typeof data, dataStringified: JSON.stringify(data) });
     setScanned(true);
     setScanComplete(true); // Mark scan as complete - no more scanning allowed
-    setCourtId(data);
-    console.log('Set courtId to:', data);
-    setIsJoining(true);
     
-    // Check if this device is already in the queue
+    // Ensure data is a string - handle both string and object cases
+    let courtIdString;
+    if (typeof data === 'string') {
+      courtIdString = data;
+    } else if (typeof data === 'object' && data !== null) {
+      // If data is an object, try to extract the URL from it
+      courtIdString = data.data || data.url || data.courtId || JSON.stringify(data);
+    } else {
+      courtIdString = String(data);
+    }
+    
+    setCourtId(courtIdString);
+    console.log('Set courtId to:', courtIdString, 'Type:', typeof courtIdString, 'Is string:', typeof courtIdString === 'string');
+    
+    // Check if this device is already in the queue for this court
     try {
-      const currentQueue = await getQueue(data);
-      const existingEntry = currentQueue.queue.find(entry => 
-        entry.display_name.includes(deviceId)
-      );
+      console.log('Checking if device is already in queue for court:', courtIdString);
+      const currentQueue = await getQueue(courtIdString);
+      console.log('Current queue:', currentQueue);
+      
+      // Look for existing entry with this specific device ID
+      // Use a longer portion of the device ID for better uniqueness
+      const deviceIdSuffix = deviceId.substring(deviceId.length - 12); // Use last 12 characters
+      console.log('Looking for device ID suffix:', deviceIdSuffix, 'in queue entries');
+      console.log('Full device ID:', deviceId);
+      
+      const existingEntry = currentQueue.queue.find(entry => {
+        const hasDeviceId = entry.display_name && entry.display_name.endsWith(`(${deviceIdSuffix})`);
+        console.log('Checking entry:', entry.display_name, 'has device ID suffix:', hasDeviceId);
+        return hasDeviceId;
+      });
 
       if (existingEntry) {
         // Device is already in the queue, go directly to queue screen
-        console.log('Device already in queue, showing queue screen');
+        console.log('Device already in queue, showing queue screen with existing position:', existingEntry.position);
         setUserEntry(existingEntry);
         setQueue(currentQueue.queue);
         setCurrentView('queue');
-        setIsJoining(false);
         return;
       }
 
-      // Device not in queue, join automatically
-      console.log('Device not in queue, joining automatically');
-      await handleJoinQueue(data);
+      // Device not in queue, go to name input screen
+      console.log('Device not in queue, going to name input screen');
+      setCurrentView('nameInput');
     } catch (error) {
       console.error('Error checking queue status:', error);
-      // If there's an error, still try to join
-      await handleJoinQueue(data);
+      // If there's an error, go to name input screen
+      setCurrentView('nameInput');
     }
   }, [scanned, scanComplete, isJoining, deviceId]);
 
   const handleJoinQueue = async (courtIdParam = null) => {
-    const targetCourtId = courtIdParam || courtId;
+    // Ensure device ID is loaded before proceeding
+    if (!deviceId) {
+      console.log('Device ID not loaded yet, cannot join queue');
+      Alert.alert('Error', 'Device not ready. Please try again.');
+      return;
+    }
+
+    // Handle case where courtIdParam might be an event object
+    let targetCourtId;
+    if (courtIdParam === null || courtIdParam === undefined) {
+      targetCourtId = courtId;
+    } else if (typeof courtIdParam === 'string') {
+      targetCourtId = courtIdParam;
+    } else {
+      // If it's an event object or other non-string, use the state courtId
+      targetCourtId = courtId;
+    }
+    
+    console.log('handleJoinQueue called with:', { 
+      courtIdParamType: typeof courtIdParam,
+      courtId, 
+      targetCourtId, 
+      targetCourtIdType: typeof targetCourtId,
+      deviceId
+    });
+    
     if (!targetCourtId) {
       Alert.alert('Error', 'No court ID available');
       return;
@@ -111,29 +197,65 @@ export default function App() {
       return;
     }
 
-    // Only allow one join attempt per scan
-    if (scanComplete && isJoining) {
-      console.log('Join already attempted for this scan');
+    if (!playerName.trim()) {
+      Alert.alert('Error', 'Please enter your name');
       return;
     }
 
     try {
-      // Generate a proper UUID format
-      const entryId = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+      setIsJoining(true);
+      
+      // Ensure targetCourtId is a string and log the conversion
+      let courtIdString;
+      if (typeof targetCourtId === 'string') {
+        courtIdString = targetCourtId;
+      } else if (typeof targetCourtId === 'object' && targetCourtId !== null) {
+        // If it's an object, try to extract the URL
+        courtIdString = targetCourtId.data || targetCourtId.url || targetCourtId.courtId || JSON.stringify(targetCourtId);
+      } else {
+        courtIdString = String(targetCourtId);
+      }
+      
+      console.log('Court ID conversion:', {
+        original: targetCourtId,
+        converted: courtIdString,
+        originalType: typeof targetCourtId,
+        convertedType: typeof courtIdString,
+        isString: typeof courtIdString === 'string'
+      });
+      
+      // Generate a proper UUID v4 format for entry ID
+      let entryId = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
         const r = Math.random() * 16 | 0;
         const v = c === 'x' ? r : (r & 0x3 | 0x8);
         return v.toString(16);
       });
       
-      // Generate a random player number
-      const playerNumber = Math.floor(Math.random() * 999) + 1;
-      // Use shorter device ID to avoid constraint issues
-      const shortDeviceId = deviceId.split('_').pop(); // Get last part after underscore
-      const displayName = `Player ${playerNumber} (${shortDeviceId})`;
+      // Validate UUID format
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+      if (!uuidRegex.test(entryId)) {
+        console.error('Invalid UUID generated:', entryId);
+        // Fallback to a simple timestamp-based ID
+        entryId = Date.now().toString(36) + Math.random().toString(36).substr(2);
+        console.log('Using fallback ID:', entryId);
+      }
       
-      console.log('Joining queue with:', { courtId: targetCourtId, displayName, entryId });
+      console.log('Generated entryId:', entryId, 'Length:', entryId.length, 'Valid UUID:', uuidRegex.test(entryId));
+      
+      // Use the player's name with a device identifier as display_name
+      // Format: "PlayerName (deviceIdSuffix)" where deviceIdSuffix is the last 12 characters
+      const deviceIdSuffix = deviceId.substring(deviceId.length - 12); // Use last 12 characters
+      const displayName = `${playerName.trim()} (${deviceIdSuffix})`;
+      console.log('Creating entry with device ID suffix:', deviceIdSuffix, 'full deviceId:', deviceId);
+      
+      console.log('Joining queue with:', { 
+        courtId: courtIdString, 
+        courtIdType: typeof courtIdString,
+        displayName, 
+        entryId 
+      });
 
-      const result = await joinQueue(targetCourtId, entryId, displayName);
+      const result = await joinQueue(courtIdString, entryId, displayName);
       console.log('Join successful, result:', result);
 
       setUserEntry(result.entry);
@@ -142,9 +264,6 @@ export default function App() {
     } catch (error) {
       console.error('Error joining queue:', error);
       Alert.alert('Error', 'Failed to join queue. Please try again.');
-      // Reset states to allow retry
-      setScanned(false);
-      setScanComplete(false);
     } finally {
       setIsJoining(false);
     }
@@ -153,8 +272,33 @@ export default function App() {
   const handleLeaveQueue = async () => {
     if (!userEntry) return;
 
+    console.log('Leaving queue with:', {
+      courtId,
+      courtIdType: typeof courtId,
+      userEntryId: userEntry.id,
+      courtIdStringified: JSON.stringify(courtId)
+    });
+
     try {
-      await leaveQueue(courtId, userEntry.id);
+      // Ensure courtId is a string with robust conversion
+      let courtIdString;
+      if (typeof courtId === 'string') {
+        courtIdString = courtId;
+      } else if (typeof courtId === 'object' && courtId !== null) {
+        // If it's an object, try to extract the URL
+        courtIdString = courtId.data || courtId.url || courtId.courtId || JSON.stringify(courtId);
+      } else {
+        courtIdString = String(courtId);
+      }
+      
+      console.log('Leave queue court ID conversion:', {
+        original: courtId,
+        converted: courtIdString,
+        originalType: typeof courtId,
+        convertedType: typeof courtIdString
+      });
+      
+      await leaveQueue(courtIdString, userEntry.id);
       console.log('Successfully left queue');
 
       setUserEntry(null);
@@ -178,6 +322,14 @@ export default function App() {
     setUserEntry(null);
     setQueue([]);
     setIsJoining(false); // Reset joining state
+    setPlayerName(''); // Reset player name
+  };
+
+  // Function to clean display name by removing device ID
+  const cleanDisplayName = (displayName) => {
+    if (!displayName) return displayName;
+    // Remove the device ID part: "PlayerName (deviceId)" -> "PlayerName"
+    return displayName.replace(/\s*\([^)]+\)$/, '');
   };
 
   // Welcome Screen
@@ -202,7 +354,7 @@ export default function App() {
             <Text style={styles.scanButtonText}>Let's Start</Text>
             <Ionicons name="arrow-forward" size={20} color="#000" style={styles.icon} />
           </TouchableOpacity>
-        </View>
+      </View>
       </SafeAreaView>
     );
   }
@@ -216,28 +368,28 @@ export default function App() {
         </View>
       );
     }
-    if (!permission.granted) {
-      return (
-        <View style={styles.container}>
+  if (!permission.granted) {
+    return (
+      <View style={styles.container}>
           <Text style={styles.text}>No access to camera</Text>
           <TouchableOpacity style={styles.button} onPress={requestPermission}>
             <Text style={styles.buttonText}>Grant Permission</Text>
           </TouchableOpacity>
           <TouchableOpacity style={styles.button} onPress={resetToWelcome}>
             <Text style={styles.buttonText}>Back to Welcome</Text>
-          </TouchableOpacity>
-        </View>
-      );
-    }
+        </TouchableOpacity>
+      </View>
+    );
+  }
 
-    return (
+  return (
       <SafeAreaView style={styles.container}>
         <StatusBar barStyle="light-content" backgroundColor="#111" />
-        <CameraView
-          style={styles.camera}
-          facing="back"
+      <CameraView
+        style={styles.camera}
+        facing="back"
           onBarcodeScanned={scanned || scanComplete || isJoining ? undefined : handleBarCodeScanned}
-          barcodeScannerSettings={{
+        barcodeScannerSettings={{
             barcodeTypes: ["qr"],
           }}
         >
@@ -254,13 +406,62 @@ export default function App() {
     );
   }
 
+  // Name Input Screen
+  if (currentView === 'nameInput') {
+    return (
+      <SafeAreaView style={styles.container}>
+        <StatusBar barStyle="light-content" backgroundColor="#111" />
+        <View style={styles.nameInputContent}>
+          <View style={styles.nameInputHeader}>
+            <Ionicons name="person" size={48} color="#FBAE17" style={styles.nameInputIcon} />
+            <Text style={styles.nameInputTitle}>Enter Your Name</Text>
+            <Text style={styles.nameInputSubtitle}>What should we call you in the queue?</Text>
+          </View>
+          
+          <View style={styles.nameInputForm}>
+            <TextInput
+              style={styles.nameInputField}
+              placeholder="Enter your name"
+              placeholderTextColor="#666"
+              value={playerName}
+              onChangeText={setPlayerName}
+              autoFocus={true}
+              maxLength={50}
+            />
+            
+            <View style={styles.nameInputButtons}>
+              <TouchableOpacity 
+                style={styles.cancelNameButton}
+                onPress={resetToWelcome}
+              >
+                <Text style={styles.cancelNameButtonText}>Cancel</Text>
+              </TouchableOpacity>
+              
+              <TouchableOpacity 
+                style={[styles.joinNameButton, (!playerName.trim() || isJoining) && styles.joinNameButtonDisabled]}
+                onPress={() => handleJoinQueue()}
+                disabled={!playerName.trim() || isJoining}
+              >
+                <Text style={styles.joinNameButtonText}>
+                  {isJoining ? 'Joining...' : 'Join Queue'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
   // Queue Screen
   if (currentView === 'queue') {
     return (
       <SafeAreaView style={styles.container}>
         <StatusBar barStyle="light-content" backgroundColor="#111" />
         <View style={styles.queueHeader}>
-          <Text style={styles.queueTitle}>Queue</Text>
+          <Text style={styles.queueTitle}>
+            {courtId ? courtId.split('court=')[1] || 'Court' : 'Queue'}
+          </Text>
           <TouchableOpacity style={styles.leaveButton} onPress={handleLeaveQueue}>
             <Text style={styles.leaveButtonText}>Leave Queue</Text>
           </TouchableOpacity>
@@ -280,7 +481,7 @@ export default function App() {
                 ]}
               >
                 <Text style={styles.queuePosition}>{index + 1}</Text>
-                <Text style={styles.queueName}>{entry.display_name}</Text>
+                <Text style={styles.queueName}>{cleanDisplayName(entry.display_name)}</Text>
                 {index === 0 && (
                   <Text style={styles.nextUpLabel}>NEXT UP</Text>
                 )}
@@ -290,9 +491,9 @@ export default function App() {
               </View>
             ))
           )}
-        </View>
+    </View>
       </SafeAreaView>
-    );
+  );
   }
 
   return null;
@@ -553,6 +754,82 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 4,
     borderRadius: 4,
+  },
+  
+  // Name Input Screen
+  nameInputContent: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 40,
+  },
+  nameInputHeader: {
+    marginBottom: 40,
+    alignItems: 'center',
+  },
+  nameInputIcon: {
+    marginBottom: 20,
+  },
+  nameInputTitle: {
+    fontSize: 28,
+    fontWeight: 'bold',
+    color: '#FBAE17',
+    textAlign: 'center',
+    marginBottom: 12,
+  },
+  nameInputSubtitle: {
+    fontSize: 16,
+    color: '#ccc',
+    textAlign: 'center',
+  },
+  nameInputForm: {
+    width: '100%',
+    maxWidth: 400,
+  },
+  nameInputField: {
+    backgroundColor: '#333',
+    borderRadius: 12,
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+    fontSize: 18,
+    color: 'white',
+    marginBottom: 30,
+    borderWidth: 2,
+    borderColor: '#555',
+    textAlign: 'center',
+  },
+  nameInputButtons: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 16,
+  },
+  cancelNameButton: {
+    flex: 1,
+    backgroundColor: '#666',
+    paddingVertical: 16,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  cancelNameButtonText: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+  joinNameButton: {
+    flex: 1,
+    backgroundColor: '#FBAE17',
+    paddingVertical: 16,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  joinNameButtonDisabled: {
+    backgroundColor: '#555',
+    opacity: 0.6,
+  },
+  joinNameButtonText: {
+    color: '#000',
+    fontSize: 16,
+    fontWeight: 'bold',
   },
   
   // General

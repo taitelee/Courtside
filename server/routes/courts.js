@@ -6,7 +6,8 @@ const r = Router();
 
 r.get("/:id/queue", async (req, res) => {
   const { id } = req.params;
-  const data = await getQueue(id);         // { queue, version }
+  const courtId = decodeURIComponent(id);
+  const data = await getQueue(courtId);         // { queue, version }
   res.json(data);
 });
 
@@ -15,10 +16,14 @@ r.post("/:id/join", async (req, res) => {
   const { entryId, display_name } = req.body; // entryId = client uuid
   const requestId = Math.random().toString(36).substr(2, 9); // Generate unique request ID
   
+  // Decode the court ID from URL
+  const courtId = decodeURIComponent(id);
+  
   console.log("=== JOIN REQUEST RECEIVED ===");
   console.log("Request ID:", requestId);
   console.log("Time:", new Date().toISOString());
-  console.log("Court ID:", id);
+  console.log("Court ID (raw):", id);
+  console.log("Court ID (decoded):", courtId);
   console.log("Entry ID:", entryId);
   console.log("Display Name:", display_name);
   console.log("Entry ID Type:", typeof entryId);
@@ -27,8 +32,8 @@ r.post("/:id/join", async (req, res) => {
   console.log("=============================");
   
   try {
-    const { queue, version, entry } = await joinTx(id, entryId, display_name, requestId);
-    broadcastQueueSync(id, queue, version);
+    const { queue, version, entry } = await joinTx(courtId, entryId, display_name, requestId);
+    broadcastQueueSync(courtId, queue, version);
     console.log(`[${requestId}] Join successful, returning:`, { entry, queueLength: queue.length, version });
     res.json({ entry, queue, version });
   } catch (error) {
@@ -41,10 +46,14 @@ r.post("/:id/join", async (req, res) => {
 r.post("/:id/leave", async (req, res) => {
   const { id } = req.params;
   const { entryId } = req.body;
+  
+  // Decode the court ID from URL
+  const courtId = decodeURIComponent(id);
 
   console.log("=== LEAVE REQUEST RECEIVED ===");
   console.log("Time:", new Date().toISOString());
-  console.log("Court ID:", id);
+  console.log("Court ID (raw):", id);
+  console.log("Court ID (decoded):", courtId);
   console.log("Entry ID:", entryId);
   console.log("Entry ID Type:", typeof entryId);
   console.log("Request Headers:", req.headers);
@@ -52,8 +61,8 @@ r.post("/:id/leave", async (req, res) => {
   console.log("=============================");
 
   try {
-    const { queue, version, entry } = await leaveTx(id, entryId);
-    broadcastQueueSync(id, queue, version);
+    const { queue, version, entry } = await leaveTx(courtId, entryId);
+    broadcastQueueSync(courtId, queue, version);
     console.log("Leave successful, returning:", { entry, queueLength: queue.length, version });
     res.json({ entry, queue });
   } catch (error) {
@@ -65,8 +74,9 @@ r.post("/:id/leave", async (req, res) => {
 
 r.post("/:id/advance", async (req, res) => {
   const { id } = req.params;
-  const { queue, version } = await advanceTx(id);
-  broadcastQueueSync(id, queue, version);
+  const courtId = decodeURIComponent(id);
+  const { queue, version } = await advanceTx(courtId);
+  broadcastQueueSync(courtId, queue, version);
   res.json({ queue, version });
 });
 

@@ -94,18 +94,30 @@ async function getQueue(courtId) {
 }
 
 async function joinTx(courtId, entryId, displayName, requestId = 'unknown') {
+  console.log(`[${requestId}] joinTx called with:`, { courtId, entryId, displayName, courtIdType: typeof courtId });
+  
+  // Ensure courtId is a string
+  let courtIdString = courtId;
+  if (typeof courtId === 'object' && courtId !== null) {
+    courtIdString = courtId.data || courtId.url || courtId.courtId || JSON.stringify(courtId);
+    console.log(`[${requestId}] Converted object courtId to string:`, courtIdString);
+  } else if (typeof courtId !== 'string') {
+    courtIdString = String(courtId);
+    console.log(`[${requestId}] Converted non-string courtId to string:`, courtIdString);
+  }
+  
   // Create a unique lock key for this court
-  const lockKey = `court_${courtId}`;
+  const lockKey = `court_${courtIdString}`;
   
   // Wait for lock to be available and acquire it atomically
   while (joinLocks.has(lockKey)) {
-    console.log(`[${requestId}] Join already in progress for court ${courtId}, waiting...`);
+    console.log(`[${requestId}] Join already in progress for court ${courtIdString}, waiting...`);
     await new Promise(resolve => setTimeout(resolve, 50)); // Wait 50ms before checking again
   }
   
   // Set the lock with a timestamp for timeout handling
-  joinLocks.set(lockKey, { timestamp: Date.now(), courtId, entryId, requestId });
-  console.log(`[${requestId}] Acquired join lock for court ${courtId}, entryId: ${entryId}`);
+  joinLocks.set(lockKey, { timestamp: Date.now(), courtId: courtIdString, entryId, requestId });
+  console.log(`[${requestId}] Acquired join lock for court ${courtIdString}, entryId: ${entryId}`);
   
   // Set a timeout to automatically release the lock after 30 seconds
   const lockTimeout = setTimeout(() => {
@@ -116,20 +128,20 @@ async function joinTx(courtId, entryId, displayName, requestId = 'unknown') {
   }, 30000);
   
   try {
-    console.log(`[${requestId}] Joining queue: courtId=${courtId}, entryId=${entryId}, displayName=${displayName}`);
+    console.log(`[${requestId}] Joining queue: courtId=${courtIdString}, entryId=${entryId}, displayName=${displayName}`);
 
     // URL encode the courtId for the API call
-    const encodedCourtId = encodeURIComponent(courtId);
+    const encodedCourtId = encodeURIComponent(courtIdString);
 
     // First, ensure the court exists in the courts table
     const existingCourts = await supabaseRequest(`courts?id=eq.${encodedCourtId}`);
     if (existingCourts.length === 0) {
-      console.log('Creating new court:', courtId);
+      console.log('Creating new court:', courtIdString);
       await supabaseRequest('courts', {
         method: 'POST',
         body: JSON.stringify({
-          id: courtId,
-          name: courtId,
+          id: courtIdString,
+          name: courtIdString,
           version: 1
         })
       });
@@ -140,23 +152,7 @@ async function joinTx(courtId, entryId, displayName, requestId = 'unknown') {
     const existingEntries = await supabaseRequest(`queue_entries?court_id=eq.${encodedCourtId}&order=position`);
     console.log(`[${requestId}] Existing entries:`, existingEntries);
     
-    // Check if this device is already in the queue
-    // Extract device ID from display name (format: "Player 123 (abc123)")
-    const deviceIdMatch = displayName.match(/\(([^)]+)\)/);
-    const deviceId = deviceIdMatch ? deviceIdMatch[1] : null;
-    
-    const existingDeviceEntry = deviceId ? existingEntries.find(entry => 
-      entry.display_name.includes(deviceId)
-    ) : null;
-
-    if (existingDeviceEntry) {
-      console.log(`[${requestId}] Device already in queue, returning existing entry`);
-      return {
-        entry: { id: existingDeviceEntry.id, display_name: existingDeviceEntry.display_name, position: existingDeviceEntry.position },
-        queue: existingEntries,
-        version: 1
-      };
-    }
+    // No device checking - allow multiple entries with same name
 
     // Check for duplicate entryId (race condition protection)
     const duplicateEntry = existingEntries.find(entry => entry.id === entryId);
@@ -174,7 +170,7 @@ async function joinTx(courtId, entryId, displayName, requestId = 'unknown') {
     // Insert new entry
     const newEntry = {
       id: entryId,
-      court_id: courtId,
+      court_id: courtIdString,
       display_name: displayName,
       position: position,
       joined_at: new Date().toISOString()
@@ -236,7 +232,20 @@ async function joinTx(courtId, entryId, displayName, requestId = 'unknown') {
 
 async function leaveTx(courtId, entryId) {
   try {
-    const encodedCourtId = encodeURIComponent(courtId);
+    console.log('leaveTx called with:', { courtId, entryId, courtIdType: typeof courtId });
+    
+    // Ensure courtId is a string
+    let courtIdString = courtId;
+    if (typeof courtId === 'object' && courtId !== null) {
+      courtIdString = courtId.data || courtId.url || courtId.courtId || JSON.stringify(courtId);
+      console.log('Converted object courtId to string:', courtIdString);
+    } else if (typeof courtId !== 'string') {
+      courtIdString = String(courtId);
+      console.log('Converted non-string courtId to string:', courtIdString);
+    }
+    
+    const encodedCourtId = encodeURIComponent(courtIdString);
+    console.log('Encoded court ID:', encodedCourtId);
     
     // Delete the entry
     await supabaseRequest(`queue_entries?id=eq.${entryId}&court_id=eq.${encodedCourtId}`, {
