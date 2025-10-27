@@ -194,7 +194,7 @@ export default function App() {
             />
           </View>
           <Text style={styles.welcomeTitle}>Welcome to Courtside</Text>
-          <Text style={styles.welcomeSubtitle}>Scan a court QR code to join the queue</Text>
+          <Text style={styles.welcomeSubtitle}>Scan a court QR code to join its queue</Text>
           <TouchableOpacity 
             style={styles.scanButton}
             onPress={() => setCurrentView('scanner')}
