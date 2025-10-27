@@ -8,12 +8,14 @@ import {
   TextInput,
   Modal,
   Dimensions,
-  StatusBar
+  StatusBar,
+  Image,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { CameraView, CameraType, useCameraPermissions } from 'expo-camera';
 import { joinQueue, leaveQueue, getQueue } from './app/services/api';
 import { useQueueRealtime } from './app/hooks/useQueueRealtime';
+import { Ionicons } from '@expo/vector-icons';
 
 const { width, height } = Dimensions.get('window');
 
@@ -67,6 +69,7 @@ export default function App() {
     setScanned(true);
     setScanComplete(true); // Mark scan as complete - no more scanning allowed
     setCourtId(data);
+    console.log('Set courtId to:', data);
     setIsJoining(true);
     
     // Check if this device is already in the queue
@@ -183,13 +186,21 @@ export default function App() {
       <SafeAreaView style={styles.container}>
         <StatusBar barStyle="light-content" backgroundColor="#111" />
         <View style={styles.welcomeContent}>
+          <View style={styles.logoContainer}>
+            <Image
+              source={require('./assets/courtsideLogo.png')}
+              style={styles.logo}
+              resizeMode="contain"
+            />
+          </View>
           <Text style={styles.welcomeTitle}>Welcome to Courtside</Text>
           <Text style={styles.welcomeSubtitle}>Scan a court QR code to join the queue</Text>
           <TouchableOpacity 
             style={styles.scanButton}
             onPress={() => setCurrentView('scanner')}
           >
-            <Text style={styles.scanButtonText}>Scan Court QR Code</Text>
+            <Text style={styles.scanButtonText}>Let's Start</Text>
+            <Ionicons name="arrow-forward" size={20} color="#000" style={styles.icon} />
           </TouchableOpacity>
         </View>
       </SafeAreaView>
@@ -271,7 +282,7 @@ export default function App() {
                 <Text style={styles.queuePosition}>{index + 1}</Text>
                 <Text style={styles.queueName}>{entry.display_name}</Text>
                 {index === 0 && (
-                  <Text style={styles.nextUpLabel}>NEXT UP!</Text>
+                  <Text style={styles.nextUpLabel}>NEXT UP</Text>
                 )}
                 {entry.id === userEntry?.id && (
                   <Text style={styles.youLabel}>You</Text>
@@ -304,13 +315,14 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     paddingHorizontal: 40,
+    paddingBottom: 80,
   },
   welcomeTitle: {
     fontSize: 32,
     fontWeight: 'bold',
     color: '#FBAE17',
     textAlign: 'center',
-    marginBottom: 16,
+    marginBottom: 12,
   },
   welcomeSubtitle: {
     fontSize: 18,
@@ -318,19 +330,28 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginBottom: 40,
   },
+  logoContainer: {
+    flex: 3,
+    justifyContent: 'center',
+    alignItems: 'center',
+    width: '100%',
+  },
   scanButton: {
-    backgroundColor: '#667eea',
-    paddingHorizontal: 32,
-    paddingVertical: 16,
-    borderRadius: 12,
-    elevation: 3,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#FBAE17',
+    borderRadius: 10,
+    paddingVertical: 15,
+    paddingHorizontal: 50,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 3.84,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 5,
   },
   scanButtonText: {
-    color: 'white',
+    color: '#000000',
     fontSize: 18,
     fontWeight: 'bold',
   },
@@ -362,7 +383,7 @@ const styles = StyleSheet.create({
   },
   backButton: {
     position: 'absolute',
-    top: 50,
+    top: 90,
     left: 20,
     backgroundColor: 'rgba(0,0,0,0.7)',
     paddingHorizontal: 16,
@@ -449,7 +470,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 20,
     paddingVertical: 16,
-    paddingTop: 50, // Extra padding to account for status bar
+    paddingTop: 80, // Extra padding to account for status bar
     backgroundColor: '#222',
     borderBottomWidth: 1,
     borderBottomColor: '#333',
