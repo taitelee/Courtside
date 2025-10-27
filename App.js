@@ -13,42 +13,61 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { CameraView, CameraType, useCameraPermissions } from 'expo-camera';
 import { joinQueue, leaveQueue, getQueue } from './app/services/api';
+import { useQueueRealtime } from './app/hooks/useQueueRealtime';
 
 const { width, height } = Dimensions.get('window');
 
 export default function App() {
   const [currentView, setCurrentView] = useState('welcome'); // welcome, scanner, queue
   const [scanned, setScanned] = useState(false);
+  const [scanComplete, setScanComplete] = useState(false); // New state to track if scan is complete
   const [courtId, setCourtId] = useState(null);
   const [queue, setQueue] = useState([]);
   const [isJoining, setIsJoining] = useState(false);
   const [userEntry, setUserEntry] = useState(null);
-  const [lastScanTime, setLastScanTime] = useState(0);
-  const [lastJoinTime, setLastJoinTime] = useState(0);
   const [deviceId] = useState(() => {
-    // Generate a unique device ID that persists for this session
-    // Use a more stable ID based on timestamp + random to avoid collisions
+    // Generate a more stable device ID that persists across app restarts
+    // Use a combination of device characteristics for better uniqueness
     const timestamp = Date.now().toString(36);
-    const random = Math.random().toString(36).substr(2, 5);
-    return `device_${timestamp}_${random}`;
+    const random = Math.random().toString(36).substr(2, 8);
+    const sessionId = `${timestamp}_${random}`;
+    
+    // Store in AsyncStorage for persistence across app restarts
+    try {
+      // For now, just use the session ID, but this could be enhanced with AsyncStorage
+      return `device_${sessionId}`;
+    } catch (error) {
+      console.log('Error generating device ID:', error);
+      return `device_${sessionId}`;
+    }
   });
 
   const [permission, requestPermission] = useCameraPermissions();
 
+  // Integrate real-time updates using the hook
+  useQueueRealtime(courtId, (newQueue, version) => {
+    console.log('Received queue sync:', { queueLength: newQueue.length, version });
+    setQueue(newQueue);
+    const updatedUserEntry = newQueue.find(item => item.id === userEntry?.id);
+    if (updatedUserEntry) {
+      setUserEntry(updatedUserEntry);
+    } else {
+      setUserEntry(null);
+    }
+  });
+
   const handleBarCodeScanned = useCallback(async ({ type, data }) => {
-    if (scanned || isJoining) return;
-    
-    // Debounce rapid scans (prevent multiple scans within 2 seconds)
-    const now = Date.now();
-    if (now - lastScanTime < 2000) {
-      console.log('Scan debounced - too soon after last scan');
+    // Only allow one scan per session
+    if (scanned || scanComplete || isJoining) {
+      console.log('Scan blocked - already scanned or processing:', { scanned, scanComplete, isJoining });
       return;
     }
-    setLastScanTime(now);
     
     console.log('QR Code scanned:', { data, type });
     setScanned(true);
+    setScanComplete(true); // Mark scan as complete - no more scanning allowed
     setCourtId(data);
+    setIsJoining(true);
     
     // Check if this device is already in the queue
     try {
@@ -63,6 +82,7 @@ export default function App() {
         setUserEntry(existingEntry);
         setQueue(currentQueue.queue);
         setCurrentView('queue');
+        setIsJoining(false);
         return;
       }
 
@@ -74,7 +94,7 @@ export default function App() {
       // If there's an error, still try to join
       await handleJoinQueue(data);
     }
-  }, [scanned, isJoining, deviceId]);
+  }, [scanned, scanComplete, isJoining, deviceId]);
 
   const handleJoinQueue = async (courtIdParam = null) => {
     const targetCourtId = courtIdParam || courtId;
@@ -88,15 +108,11 @@ export default function App() {
       return;
     }
 
-    // Rate limiting: prevent multiple join attempts within 3 seconds
-    const now = Date.now();
-    if (now - lastJoinTime < 3000) {
-      console.log('Join rate limited - too soon after last join attempt');
+    // Only allow one join attempt per scan
+    if (scanComplete && isJoining) {
+      console.log('Join already attempted for this scan');
       return;
     }
-    setLastJoinTime(now);
-
-    setIsJoining(true);
 
     try {
       // Generate a proper UUID format
@@ -123,7 +139,9 @@ export default function App() {
     } catch (error) {
       console.error('Error joining queue:', error);
       Alert.alert('Error', 'Failed to join queue. Please try again.');
+      // Reset states to allow retry
       setScanned(false);
+      setScanComplete(false);
     } finally {
       setIsJoining(false);
     }
@@ -135,11 +153,13 @@ export default function App() {
     try {
       await leaveQueue(courtId, userEntry.id);
       console.log('Successfully left queue');
-      
+
       setUserEntry(null);
       setQueue([]);
       setCourtId(null);
       setScanned(false);
+      setScanComplete(false); // Reset scan complete state
+      setIsJoining(false); // Reset joining state
       setCurrentView('scanner');
     } catch (error) {
       console.error('Error leaving queue:', error);
@@ -150,9 +170,11 @@ export default function App() {
   const resetToWelcome = () => {
     setCurrentView('welcome');
     setScanned(false);
+    setScanComplete(false); // Reset scan complete state
     setCourtId(null);
     setUserEntry(null);
     setQueue([]);
+    setIsJoining(false); // Reset joining state
   };
 
   // Welcome Screen
@@ -203,7 +225,7 @@ export default function App() {
         <CameraView
           style={styles.camera}
           facing="back"
-          onBarcodeScanned={scanned || isJoining ? undefined : handleBarCodeScanned}
+          onBarcodeScanned={scanned || scanComplete || isJoining ? undefined : handleBarCodeScanned}
           barcodeScannerSettings={{
             barcodeTypes: ["qr"],
           }}

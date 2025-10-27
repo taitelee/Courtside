@@ -13,8 +13,10 @@ r.get("/:id/queue", async (req, res) => {
 r.post("/:id/join", async (req, res) => {
   const { id } = req.params;
   const { entryId, display_name } = req.body; // entryId = client uuid
+  const requestId = Math.random().toString(36).substr(2, 9); // Generate unique request ID
   
   console.log("=== JOIN REQUEST RECEIVED ===");
+  console.log("Request ID:", requestId);
   console.log("Time:", new Date().toISOString());
   console.log("Court ID:", id);
   console.log("Entry ID:", entryId);
@@ -25,13 +27,13 @@ r.post("/:id/join", async (req, res) => {
   console.log("=============================");
   
   try {
-    const { queue, version, entry } = await joinTx(id, entryId, display_name);
+    const { queue, version, entry } = await joinTx(id, entryId, display_name, requestId);
     broadcastQueueSync(id, queue, version);
-    console.log("Join successful, returning:", { entry, queueLength: queue.length, version });
+    console.log(`[${requestId}] Join successful, returning:`, { entry, queueLength: queue.length, version });
     res.json({ entry, queue, version });
   } catch (error) {
-    console.error("Join error:", error.message);
-    console.error("Full error:", error);
+    console.error(`[${requestId}] Join error:`, error.message);
+    console.error(`[${requestId}] Full error:`, error);
     res.status(500).json({ error: error.message });
   }
 });

@@ -3,18 +3,44 @@ import { getSocket } from "../services/realtime";
 
 export function useQueueRealtime(courtId, onSync) {
   useEffect(() => {
-    if (!courtId) return; // Don't subscribe if no courtId
+    if (!courtId) {
+      console.log("useQueueRealtime: No courtId, skipping subscription");
+      return; // Don't subscribe if no courtId
+    }
     
+    console.log("useQueueRealtime: Subscribing to courtId:", courtId);
     const s = getSocket();
-    s.emit("subscribe", { courtId });
+    
+    // Add connection debugging
+    s.on("connect", () => {
+      console.log("Socket connected, subscribing to court:", courtId);
+      s.emit("subscribe", { courtId });
+    });
+    
+    s.on("disconnect", () => {
+      console.log("Socket disconnected");
+    });
+    
+    // If already connected, subscribe immediately
+    if (s.connected) {
+      console.log("Socket already connected, subscribing immediately");
+      s.emit("subscribe", { courtId });
+    }
 
     const handler = (evt) => {
-      if (evt.type !== "queue.sync" || evt.courtId !== courtId) return;
-      console.log("Received queue.sync", evt);
+      console.log("useQueueRealtime: Received event:", evt);
+      if (evt.type !== "queue.sync" || evt.courtId !== courtId) {
+        console.log("useQueueRealtime: Event filtered out - type:", evt.type, "courtId:", evt.courtId, "expected:", courtId);
+        return;
+      }
+      console.log("useQueueRealtime: Processing queue.sync", evt);
       onSync(evt.queue, evt.version);
     };
+    
     s.on("queue.update", handler);
+    
     return () => { 
+      console.log("useQueueRealtime: Cleaning up subscription for courtId:", courtId);
       s.emit("unsubscribe", { courtId }); 
       s.off("queue.update", handler); 
     };

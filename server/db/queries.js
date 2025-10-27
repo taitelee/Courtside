@@ -2,6 +2,9 @@
 const https = require('https');
 const http = require('http');
 
+// In-memory join locks to prevent concurrent joins
+const joinLocks = new Map();
+
 // Supabase configuration
 const SUPABASE_URL = 'https://phunvrocpkmmnnbfwwmw.supabase.co';
 const SUPABASE_SERVICE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBodW52cm9jcGttbW5uYmZ3d213Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2MDUwMjcwOCwiZXhwIjoyMDc2MDc4NzA4fQ.2iAwLDPm8msp5zRqrtVIuc4Q81y_sGQukaLrPUYiOtA';
@@ -90,13 +93,34 @@ async function getQueue(courtId) {
   }
 }
 
-async function joinTx(courtId, entryId, displayName) {
+async function joinTx(courtId, entryId, displayName, requestId = 'unknown') {
+  // Create a unique lock key for this court
+  const lockKey = `court_${courtId}`;
+  
+  // Wait for lock to be available and acquire it atomically
+  while (joinLocks.has(lockKey)) {
+    console.log(`[${requestId}] Join already in progress for court ${courtId}, waiting...`);
+    await new Promise(resolve => setTimeout(resolve, 50)); // Wait 50ms before checking again
+  }
+  
+  // Set the lock with a timestamp for timeout handling
+  joinLocks.set(lockKey, { timestamp: Date.now(), courtId, entryId, requestId });
+  console.log(`[${requestId}] Acquired join lock for court ${courtId}, entryId: ${entryId}`);
+  
+  // Set a timeout to automatically release the lock after 30 seconds
+  const lockTimeout = setTimeout(() => {
+    if (joinLocks.has(lockKey)) {
+      console.log(`Join lock timeout for court ${courtId}, releasing lock`);
+      joinLocks.delete(lockKey);
+    }
+  }, 30000);
+  
   try {
-    console.log(`Joining queue: courtId=${courtId}, entryId=${entryId}, displayName=${displayName}`);
-    
+    console.log(`[${requestId}] Joining queue: courtId=${courtId}, entryId=${entryId}, displayName=${displayName}`);
+
     // URL encode the courtId for the API call
     const encodedCourtId = encodeURIComponent(courtId);
-    
+
     // First, ensure the court exists in the courts table
     const existingCourts = await supabaseRequest(`courts?id=eq.${encodedCourtId}`);
     if (existingCourts.length === 0) {
@@ -111,10 +135,10 @@ async function joinTx(courtId, entryId, displayName) {
       });
       console.log('Court created successfully');
     }
-    
-    // Get existing entries
+
+    // Get existing entries with a fresh query
     const existingEntries = await supabaseRequest(`queue_entries?court_id=eq.${encodedCourtId}&order=position`);
-    console.log('Existing entries:', existingEntries);
+    console.log(`[${requestId}] Existing entries:`, existingEntries);
     
     // Check if this device is already in the queue
     // Extract device ID from display name (format: "Player 123 (abc123)")
@@ -124,16 +148,27 @@ async function joinTx(courtId, entryId, displayName) {
     const existingDeviceEntry = deviceId ? existingEntries.find(entry => 
       entry.display_name.includes(deviceId)
     ) : null;
-    
+
     if (existingDeviceEntry) {
-      console.log('Device already in queue, returning existing entry');
+      console.log(`[${requestId}] Device already in queue, returning existing entry`);
       return {
         entry: { id: existingDeviceEntry.id, display_name: existingDeviceEntry.display_name, position: existingDeviceEntry.position },
         queue: existingEntries,
         version: 1
       };
     }
-    
+
+    // Check for duplicate entryId (race condition protection)
+    const duplicateEntry = existingEntries.find(entry => entry.id === entryId);
+    if (duplicateEntry) {
+      console.log(`[${requestId}] Entry ID already exists, returning existing entry`);
+      return {
+        entry: { id: duplicateEntry.id, display_name: duplicateEntry.display_name, position: duplicateEntry.position },
+        queue: existingEntries,
+        version: 1
+      };
+    }
+
     const position = existingEntries.length + 1;
 
     // Insert new entry
@@ -144,13 +179,31 @@ async function joinTx(courtId, entryId, displayName) {
       position: position,
       joined_at: new Date().toISOString()
     };
-    console.log('Inserting entry:', newEntry);
+    console.log(`[${requestId}] Inserting entry:`, newEntry);
 
-    await supabaseRequest('queue_entries', {
-      method: 'POST',
-      body: JSON.stringify(newEntry)
-    });
-    console.log('Entry inserted successfully');
+    try {
+      await supabaseRequest('queue_entries', {
+        method: 'POST',
+        body: JSON.stringify(newEntry)
+      });
+      console.log(`[${requestId}] Entry inserted successfully`);
+    } catch (insertError) {
+      // If insert fails due to duplicate key, check if entry was added by another process
+      if (insertError.message && insertError.message.includes('duplicate key')) {
+        console.log(`[${requestId}] Insert failed due to duplicate key, checking for existing entry`);
+        const updatedEntries = await supabaseRequest(`queue_entries?court_id=eq.${encodedCourtId}&order=position`);
+        const existingEntry = updatedEntries.find(entry => entry.id === entryId);
+        if (existingEntry) {
+          console.log(`[${requestId}] Entry was added by another process, returning existing entry`);
+          return {
+            entry: { id: existingEntry.id, display_name: existingEntry.display_name, position: existingEntry.position },
+            queue: updatedEntries,
+            version: 1
+          };
+        }
+      }
+      throw insertError;
+    }
 
     // Update court version (use a simple incrementing number)
     await supabaseRequest(`courts?id=eq.${encodedCourtId}`, {
@@ -161,17 +214,23 @@ async function joinTx(courtId, entryId, displayName) {
 
     // Get updated queue
     const queue = await supabaseRequest(`queue_entries?court_id=eq.${encodedCourtId}&order=position`);
-    console.log('Updated queue:', queue);
-    
+    console.log(`[${requestId}] Updated queue:`, queue);
+
+    console.log(`[${requestId}] Join completed successfully for entryId: ${entryId}`);
     return {
       entry: { id: entryId, display_name: displayName, position },
       queue,
       version: 1
     };
   } catch (error) {
-    console.error('Error joining queue:', error);
-    console.error('Error details:', error.message);
+    console.error(`[${requestId}] Error joining queue:`, error);
+    console.error(`[${requestId}] Error details:`, error.message);
     throw error;
+  } finally {
+    // Always release the lock and clear timeout
+    clearTimeout(lockTimeout);
+    joinLocks.delete(lockKey);
+    console.log(`[${requestId}] Released join lock for court ${courtId}`);
   }
 }
 
