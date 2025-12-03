@@ -13,7 +13,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { CameraView, CameraType, useCameraPermissions } from 'expo-camera';
-import { joinQueue, leaveQueue, getQueue } from './app/services/api';
+import { joinQueue, leaveQueue, getQueue, getCourtInfo } from './app/services/api';
 import { useQueueRealtime } from './app/hooks/useQueueRealtime';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -30,6 +30,7 @@ export default function App() {
   const [userEntry, setUserEntry] = useState(null);
   const [playerName, setPlayerName] = useState('');
   const [deviceId, setDeviceId] = useState(null);
+  const [courtName, setCourtName] = useState('');
 
   // Load or generate persistent device ID
   useEffect(() => {
@@ -122,6 +123,9 @@ export default function App() {
     
     setCourtId(courtIdString);
     console.log('Set courtId to:', courtIdString, 'Type:', typeof courtIdString, 'Is string:', typeof courtIdString === 'string');
+    
+    // Load court information
+    await loadCourtInfo(courtIdString);
     
     // Check if this device is already in the queue for this court
     try {
@@ -304,6 +308,7 @@ export default function App() {
       setUserEntry(null);
       setQueue([]);
       setCourtId(null);
+      setCourtName(''); // Reset court name
       setScanned(false);
       setScanComplete(false); // Reset scan complete state
       setIsJoining(false); // Reset joining state
@@ -323,6 +328,7 @@ export default function App() {
     setQueue([]);
     setIsJoining(false); // Reset joining state
     setPlayerName(''); // Reset player name
+    setCourtName(''); // Reset court name
   };
 
   // Function to clean display name by removing device ID
@@ -330,6 +336,20 @@ export default function App() {
     if (!displayName) return displayName;
     // Remove the device ID part: "PlayerName (deviceId)" -> "PlayerName"
     return displayName.replace(/\s*\([^)]+\)$/, '');
+  };
+
+  // Function to load court information
+  const loadCourtInfo = async (courtIdString) => {
+    try {
+      console.log('Loading court info for:', courtIdString);
+      const courtInfo = await getCourtInfo(courtIdString);
+      console.log('Court info loaded:', courtInfo);
+      setCourtName(courtInfo.name || courtIdString.split('court=')[1] || 'Court');
+    } catch (error) {
+      console.error('Error loading court info:', error);
+      // Fallback to extracting from URL
+      setCourtName(courtIdString.split('court=')[1] || 'Court');
+    }
   };
 
   // Welcome Screen
@@ -460,7 +480,7 @@ export default function App() {
         <StatusBar barStyle="light-content" backgroundColor="#111" />
         <View style={styles.queueHeader}>
           <Text style={styles.queueTitle}>
-            {courtId ? courtId.split('court=')[1] || 'Court' : 'Queue'}
+            {courtName || 'Queue'}
           </Text>
           <TouchableOpacity style={styles.leaveButton} onPress={handleLeaveQueue}>
             <Text style={styles.leaveButtonText}>Leave Queue</Text>
@@ -671,7 +691,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 20,
     paddingVertical: 16,
-    paddingTop: 80, // Extra padding to account for status bar
+    paddingTop: 60, // Reduced padding to make header slightly higher
     backgroundColor: '#222',
     borderBottomWidth: 1,
     borderBottomColor: '#333',

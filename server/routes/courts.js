@@ -1,5 +1,5 @@
 const { Router } = require("express");
-const { getQueue, joinTx, leaveTx, advanceTx } = require("../db/queries");
+const { getQueue, joinTx, leaveTx, advanceTx, getCourtInfo } = require("../db/queries");
 const { broadcastQueueSync } = require("../services/broadcast");
 
 const r = Router();
@@ -9,6 +9,13 @@ r.get("/:id/queue", async (req, res) => {
   const courtId = decodeURIComponent(id);
   const data = await getQueue(courtId);         // { queue, version }
   res.json(data);
+});
+
+r.get("/:id/info", async (req, res) => {
+  const { id } = req.params;
+  const courtId = decodeURIComponent(id);
+  const courtInfo = await getCourtInfo(courtId);
+  res.json(courtInfo);
 });
 
 r.post("/:id/join", async (req, res) => {

@@ -320,4 +320,36 @@ async function advanceTx(courtId) {
   }
 }
 
-module.exports = { pool, getQueue, joinTx, leaveTx, advanceTx };
+async function getCourtInfo(courtId) {
+  try {
+    console.log(`Getting court info for: ${courtId}`);
+    
+    // URL encode the courtId for the API call
+    const encodedCourtId = encodeURIComponent(courtId);
+    
+    // Get court information
+    const courts = await supabaseRequest(`courts?id=eq.${encodedCourtId}&select=id,name,version`);
+    console.log('Court data:', courts);
+    
+    if (courts.length > 0) {
+      return courts[0];
+    } else {
+      // Return default court info if not found
+      return {
+        id: courtId,
+        name: courtId.split('court=')[1] || 'Court',
+        version: 0
+      };
+    }
+  } catch (error) {
+    console.error('Error getting court info:', error);
+    // Return default court info on error
+    return {
+      id: courtId,
+      name: courtId.split('court=')[1] || 'Court',
+      version: 0
+    };
+  }
+}
+
+module.exports = { pool, getQueue, joinTx, leaveTx, advanceTx, getCourtInfo };

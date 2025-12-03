@@ -52,3 +52,13 @@ export async function leaveQueue(courtId, entryId) {
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }
+
+export async function getCourtInfo(courtId) {
+  console.log("Getting court info for:", courtId, "Type:", typeof courtId);
+  const courtIdString = typeof courtId === 'string' ? courtId : String(courtId);
+  const encodedCourtId = encodeURIComponent(courtIdString);
+  console.log("getCourtInfo API call:", { courtIdString, encodedCourtId, url: `${API}/courts/${encodedCourtId}/info` });
+  const res = await fetch(`${API}/courts/${encodedCourtId}/info`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
