@@ -93,7 +93,7 @@ async function getQueue(courtId) {
   }
 }
 
-async function joinTx(courtId, entryId, displayName, requestId = 'unknown') {
+async function joinTx(courtId, entryId, displayName, requestId = 'unknown', device_id = "") {
   console.log(`[${requestId}] joinTx called with:`, { courtId, entryId, displayName, courtIdType: typeof courtId });
   
   // Ensure courtId is a string
@@ -128,7 +128,7 @@ async function joinTx(courtId, entryId, displayName, requestId = 'unknown') {
   }, 30000);
   
   try {
-    console.log(`[${requestId}] Joining queue: courtId=${courtIdString}, entryId=${entryId}, displayName=${displayName}`);
+    console.log(`[${requestId}] Joining queue: courtId=${courtIdString}, entryId=${entryId}, displayName=${displayName}, device_id=${device_id}`);
 
     // URL encode the courtId for the API call
     const encodedCourtId = encodeURIComponent(courtIdString);
@@ -173,7 +173,8 @@ async function joinTx(courtId, entryId, displayName, requestId = 'unknown') {
       court_id: courtIdString,
       display_name: displayName,
       position: position,
-      joined_at: new Date().toISOString()
+      joined_at: new Date().toISOString(),
+      device_id: device_id
     };
     console.log(`[${requestId}] Inserting entry:`, newEntry);
 
@@ -320,4 +321,26 @@ async function advanceTx(courtId) {
   }
 }
 
-module.exports = { pool, getQueue, joinTx, leaveTx, advanceTx };
+async function registerPushToken(deviceId, expoToken) {
+  try {
+    console.log('Registering push token:', { deviceId, expoToken });
+    
+    await supabaseRequest("device_push_tokens", {
+      method: "POST",
+      body: JSON.stringify({
+        device_id: deviceId,
+        expo_push_token: expoToken,
+      }),
+      headers: {
+        Prefer: "resolution=merge-duplicates",
+      },
+    });
+    
+    console.log('Push token registered successfully');
+  } catch (error) {
+    console.error('Error registering push token:', error);
+    throw error;
+  }
+}
+
+module.exports = { pool, getQueue, joinTx, leaveTx, advanceTx, registerPushToken };

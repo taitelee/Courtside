@@ -13,7 +13,7 @@ r.get("/:id/queue", async (req, res) => {
 
 r.post("/:id/join", async (req, res) => {
   const { id } = req.params;
-  const { entryId, display_name } = req.body; // entryId = client uuid
+  const { entryId, display_name, device_id } = req.body; // entryId = client uuid
   const requestId = Math.random().toString(36).substr(2, 9); // Generate unique request ID
   
   // Decode the court ID from URL
@@ -32,7 +32,7 @@ r.post("/:id/join", async (req, res) => {
   console.log("=============================");
   
   try {
-    const { queue, version, entry } = await joinTx(courtId, entryId, display_name, requestId);
+    const { queue, version, entry } = await joinTx(courtId, entryId, display_name, requestId, device_id);
     broadcastQueueSync(courtId, queue, version);
     console.log(`[${requestId}] Join successful, returning:`, { entry, queueLength: queue.length, version });
     res.json({ entry, queue, version });
@@ -78,6 +78,24 @@ r.post("/:id/advance", async (req, res) => {
   const { queue, version } = await advanceTx(courtId);
   broadcastQueueSync(courtId, queue, version);
   res.json({ queue, version });
+});
+
+r.post("/register-push-token", async (req, res) => {
+  try {
+    const { deviceId, expoToken } = req.body;
+    console.log("Received push token registration:", { deviceId, expoToken });
+    if (!deviceId || !expoToken) {
+      return res.status(400).json({ error: "Missing deviceId or expoToken" });
+    }
+
+    // Upsert into Supabase table
+    await registerPushToken(deviceId, expoToken);
+
+    return res.status(200).json({ success: true });
+  } catch (err) {
+    console.error("Error saving push token:", err);
+    res.status(500).json({ error: "Failed to save push token" });
+  }
 });
 
 module.exports = r;

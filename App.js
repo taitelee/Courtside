@@ -13,10 +13,12 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { CameraView, CameraType, useCameraPermissions } from 'expo-camera';
-import { joinQueue, leaveQueue, getQueue } from './app/services/api';
+import { joinQueue, leaveQueue, getQueue, registerPushNotificationToken } from './app/services/api';
 import { useQueueRealtime } from './app/hooks/useQueueRealtime';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { registerForPushNotificationsAsync } from './app/utils/notification';
+import * as Notifications from 'expo-notifications';
 
 const { width, height } = Dimensions.get('window');
 
@@ -30,6 +32,14 @@ export default function App() {
   const [userEntry, setUserEntry] = useState(null);
   const [playerName, setPlayerName] = useState('');
   const [deviceId, setDeviceId] = useState(null);
+
+  Notifications.setNotificationHandler({
+    handleNotification: async () => ({
+      shouldShowAlert: true,
+      shouldPlaySound: true,
+      shouldSetBadge: false,
+    }),
+  });
 
   // Load or generate persistent device ID
   useEffect(() => {
@@ -77,6 +87,27 @@ export default function App() {
 
     loadOrGenerateDeviceId();
   }, []);
+
+  useEffect(() => {
+    if (!deviceId) return;
+    console.log('Setting notification token using ', deviceId);
+    (async () => {
+      const expoToken = await registerForPushNotificationsAsync();
+      console.log('Obtained Expo push token:', expoToken);
+      if (!expoToken) return;
+
+      console.log('Registering push token with backend:', { deviceId, expoToken });
+      const res = await registerPushNotificationToken(deviceId, expoToken);
+      console.log('Push token registration response status:', res);
+
+      if (!res.ok) {
+        console.error("Failed to register token:", await res.text());
+      } else {
+        console.log("Registered push token for device:", deviceId);
+      }
+    })();
+  }, [deviceId]);
+
 
   const [permission, requestPermission] = useCameraPermissions();
 
@@ -255,7 +286,7 @@ export default function App() {
         entryId 
       });
 
-      const result = await joinQueue(courtIdString, entryId, displayName);
+      const result = await joinQueue(courtIdString, entryId, displayName, deviceId);
       console.log('Join successful, result:', result);
 
       setUserEntry(result.entry);

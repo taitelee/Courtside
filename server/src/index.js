@@ -6,6 +6,8 @@ const { Server } = require("socket.io");
 const { onSocketConnection } = require("../ws/socket");
 const { setIO } = require("../io");
 
+require("../workers/queueListener");
+
 const app = express();
 app.use(express.json());
 
@@ -53,6 +55,9 @@ app.get("/test", (req, res) => {
 // Set up routes after io is created
 const courtsRouter = require("../routes/courts");
 app.use("/courts", courtsRouter);
+
+const devicesRouter = require("../routes/devices");
+app.use("/devices", devicesRouter);
 
 io.on("connection", onSocketConnection);
 

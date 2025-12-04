@@ -12,13 +12,15 @@ export async function getQueue(courtId) {
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json(); // { queue, version }
 }
-export async function joinQueue(courtId, entryId, display_name) {
+
+export async function joinQueue(courtId, entryId, display_name, device_id = "") {
   console.log("Joining queue:", { 
     courtId, 
     courtIdType: typeof courtId,
     entryId, 
     display_name, 
-    entryIdType: typeof entryId 
+    entryIdType: typeof entryId,
+    device_id
   });
   
   // Ensure courtId is a string
@@ -35,11 +37,12 @@ export async function joinQueue(courtId, entryId, display_name) {
   const res = await fetch(`${API}/courts/${encodedCourtId}/join`, {
     method: "POST",
     headers: { "Content-Type":"application/json" },
-    body: JSON.stringify({ entryId, display_name })
+    body: JSON.stringify({ entryId, display_name, device_id })
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }
+
 export async function leaveQueue(courtId, entryId) {
   console.log("Leaving queue:", { courtId, entryId, courtIdType: typeof courtId });
   const courtIdString = typeof courtId === 'string' ? courtId : String(courtId);
@@ -51,4 +54,31 @@ export async function leaveQueue(courtId, entryId) {
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
+}
+
+export async function registerPushNotificationToken(deviceId, expoToken) {
+  console.log("Upserting or adding deviceId <-> Expo push token:", { deviceId, expoToken });
+
+  try {
+    const res = await fetch(`${API}/devices/register-push-token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ deviceId, expoToken }),
+    });
+
+    console.log("register-push-token response status:", res.status);
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      console.error("Backend returned error:", res.status, text);
+      throw new Error(`HTTP ${res.status}`);
+    }
+
+    const data = await res.json();
+    console.log("register-push-token response JSON:", data);
+    return data;
+  } catch (err) {
+    console.error("Error in registerPushNotificationToken:", err);
+    throw err;
+  }
 }
