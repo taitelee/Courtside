@@ -20,7 +20,7 @@ r.get("/:id/info", async (req, res) => {
 
 r.post("/:id/join", async (req, res) => {
   const { id } = req.params;
-  const { entryId, display_name } = req.body; // entryId = client uuid
+  const { entryId, display_name, device_id } = req.body; // entryId = client uuid
   const requestId = Math.random().toString(36).substr(2, 9); // Generate unique request ID
   
   // Decode the court ID from URL
@@ -33,13 +33,14 @@ r.post("/:id/join", async (req, res) => {
   console.log("Court ID (decoded):", courtId);
   console.log("Entry ID:", entryId);
   console.log("Display Name:", display_name);
+  console.log("Device ID:", device_id);
   console.log("Entry ID Type:", typeof entryId);
   console.log("Request Headers:", req.headers);
   console.log("Request Body:", req.body);
   console.log("=============================");
   
   try {
-    const { queue, version, entry } = await joinTx(courtId, entryId, display_name, requestId);
+    const { queue, version, entry } = await joinTx(courtId, entryId, display_name, requestId, device_id || "");
     broadcastQueueSync(courtId, queue, version);
     console.log(`[${requestId}] Join successful, returning:`, { entry, queueLength: queue.length, version });
     res.json({ entry, queue, version });

@@ -54,6 +54,9 @@ app.get("/test", (req, res) => {
 const courtsRouter = require("../routes/courts");
 app.use("/courts", courtsRouter);
 
+const devicesRouter = require("../routes/devices");
+app.use("/devices", devicesRouter);
+
 io.on("connection", onSocketConnection);
 
 server.listen(8080, () => console.log("API on :8080 (using Supabase REST API)"));
