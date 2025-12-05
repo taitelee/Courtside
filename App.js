@@ -13,7 +13,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { CameraView, CameraType, useCameraPermissions } from 'expo-camera';
-import { joinQueue, leaveQueue, getQueue, getCourtInfo } from './app/services/api';
+import { joinQueue, leaveQueue, getQueue, getCourtInfo, getPlayingTeams, removePlayingTeam, extendPlayTime, joinSlot } from './app/services/api';
 import { useQueueRealtime } from './app/hooks/useQueueRealtime';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -31,6 +31,14 @@ export default function App() {
   const [playerName, setPlayerName] = useState('');
   const [deviceId, setDeviceId] = useState(null);
   const [courtName, setCourtName] = useState('');
+  const [playingTeams, setPlayingTeams] = useState([]);
+  const [gameStartTime, setGameStartTime] = useState(null);
+  const [slots, setSlots] = useState([null, null]); // [slot0, slot1]
+  const [timerPrompts, setTimerPrompts] = useState({}); // { entryId: { show: boolean, time: number } }
+  const [timerTick, setTimerTick] = useState(0); // Force re-render for timer updates
+  const lastSlotUpdateRef = useRef(null); // Track when slots were last updated to prevent overwrites
+  const slotsRef = useRef([null, null]); // Ref to track current slots state for real-time updates
+  const userEntryRef = useRef(null); // Ref to track current userEntry for real-time updates
 
   // Load or generate persistent device ID
   useEffect(() => {
@@ -81,17 +89,151 @@ export default function App() {
 
   const [permission, requestPermission] = useCameraPermissions();
 
+  // Update userEntryRef whenever userEntry changes
+  useEffect(() => {
+    userEntryRef.current = userEntry;
+  }, [userEntry]);
+
   // Integrate real-time updates using the hook
   useQueueRealtime(courtId, (newQueue, version) => {
-    console.log('Received queue sync:', { queueLength: newQueue.length, version });
+    console.log('Received queue sync:', { queueLength: newQueue.length, version, userEntryId: userEntryRef.current?.id });
     setQueue(newQueue);
-    const updatedUserEntry = newQueue.find(item => item.id === userEntry?.id);
-    if (updatedUserEntry) {
-      setUserEntry(updatedUserEntry);
-    } else {
-      setUserEntry(null);
+    
+    // Only update userEntry if we have a current userEntry to check
+    // Don't clear it if user is in a slot (they might be filtered from queue display but still in queue)
+    // Use ref to get the most current userEntry value, not the stale closure value
+    if (userEntryRef.current) {
+      const updatedUserEntry = newQueue.find(item => item.id === userEntryRef.current.id);
+      if (updatedUserEntry) {
+        console.log('Found userEntry in queue, updating:', updatedUserEntry.id);
+        setUserEntry(updatedUserEntry);
+      } else {
+        // Check if user is in a slot - use ref to get current slots state
+        // We need to check the actual current slots, not the stale closure value
+        const userInSlot = slotsRef.current.some(slot => slot && slot.entryId === userEntryRef.current.id);
+        console.log('User not in queue, checking if in slot:', { userInSlot, slots: slotsRef.current, userId: userEntryRef.current.id });
+        
+        // Also check if slots were recently updated (user might have just joined)
+        const recentlyUpdated = lastSlotUpdateRef.current && (Date.now() - lastSlotUpdateRef.current < 10000);
+        
+        if (!userInSlot && !recentlyUpdated) {
+          // Only clear userEntry if they're not in a slot, not in queue, AND slots haven't been recently updated
+          // This prevents clearing userEntry right after joining a slot due to race conditions
+          console.log('User not found in queue and not in slot (and slots not recently updated), clearing userEntry');
+          setUserEntry(null);
+        } else if (userInSlot) {
+          console.log('User in slot, keeping userEntry even though not in queue display');
+        } else {
+          console.log('User not in queue but slots recently updated - keeping userEntry to prevent race condition');
+        }
+      }
+    }
+    
+    // Reload playing teams when queue updates (but don't overwrite if we just joined a slot)
+    if (courtId && currentView === 'queue') {
+      loadPlayingTeams(true); // Skip if slots were recently updated
     }
   });
+
+  // Load playing teams (slot-based)
+  const loadPlayingTeams = async (skipIfRecent = false) => {
+    if (!courtId) return;
+    
+    // Skip reload if slots were just updated (within last 5 seconds)
+    // This prevents overwriting slots immediately after joining
+    if (skipIfRecent && lastSlotUpdateRef.current) {
+      const timeSinceUpdate = Date.now() - lastSlotUpdateRef.current;
+      if (timeSinceUpdate < 5000) {
+        console.log('Skipping loadPlayingTeams - slots updated recently (', timeSinceUpdate, 'ms ago)');
+        return;
+      }
+    }
+    
+    try {
+      const result = await getPlayingTeams(courtId);
+      const newSlots = result.slots || [null, null];
+      
+      // Safety check: if user is currently in a slot, don't clear it even if backend says it's empty
+      // This prevents race conditions where backend hasn't updated yet
+      if (userEntryRef.current) {
+        const userInCurrentSlots = slotsRef.current.some(slot => slot && slot.entryId === userEntryRef.current.id);
+        const userInNewSlots = newSlots.some(slot => slot && slot.entryId === userEntryRef.current.id);
+        
+        if (userInCurrentSlots && !userInNewSlots) {
+          console.log('User was in slot but not in new slots - preserving current slot to prevent race condition');
+          // Don't update slots if user was in a slot but backend doesn't show them yet
+          // This is likely a race condition - backend will catch up
+          return;
+        }
+      }
+      
+      setSlots(newSlots);
+      slotsRef.current = newSlots; // Update ref
+      setGameStartTime(result.gameStartTime || null);
+      // Also set playingTeams for backward compatibility with queue filtering
+      const teams = newSlots.filter(slot => slot !== null);
+      setPlayingTeams(teams);
+    } catch (error) {
+      console.error('Error loading playing teams:', error);
+      // Don't clear slots on error if user is in a slot - might be temporary network issue
+      if (userEntryRef.current) {
+        const userInCurrentSlots = slotsRef.current.some(slot => slot && slot.entryId === userEntryRef.current.id);
+        if (userInCurrentSlots) {
+          console.log('Error loading playing teams but user is in slot - preserving current state');
+          return;
+        }
+      }
+      const emptySlots = [null, null];
+      setSlots(emptySlots);
+      slotsRef.current = emptySlots; // Update ref
+      setGameStartTime(null);
+      setPlayingTeams([]);
+    }
+  };
+
+  // Load playing teams when on queue screen
+  useEffect(() => {
+    if (currentView === 'queue' && courtId) {
+      loadPlayingTeams();
+      // Refresh playing teams every 5 seconds (but skip if slots were recently updated)
+      const interval = setInterval(() => {
+        loadPlayingTeams(true); // Pass skipIfRecent flag
+      }, 5000);
+      return () => clearInterval(interval);
+    }
+  }, [currentView, courtId]);
+
+  // Update timer display every second - single timer when game is active
+  useEffect(() => {
+    if (currentView === 'queue' && gameStartTime && slots[0] !== null && slots[1] !== null) {
+      const updateTimer = () => {
+        const startTime = new Date(gameStartTime);
+        const elapsed = Date.now() - startTime.getTime();
+        const minutes = Math.floor(elapsed / 60000);
+        
+        // Show prompt at 15 minutes (and keep showing until handled)
+        const newPrompts = {};
+        if (minutes >= 15) {
+          // Show prompt for both teams
+          slots.forEach(slot => {
+            if (slot) {
+              newPrompts[slot.entryId] = { show: true, time: minutes };
+            }
+          });
+        }
+        setTimerPrompts(newPrompts);
+        // Force re-render to update timer display
+        setTimerTick(prev => prev + 1);
+      };
+      
+      updateTimer();
+      const interval = setInterval(updateTimer, 1000); // Update every second
+      return () => clearInterval(interval);
+    } else {
+      // Clear timers if game not active
+      setTimerTick(prev => prev + 1);
+    }
+  }, [currentView, gameStartTime, slots]); // Depend on gameStartTime and slots
 
   const handleBarCodeScanned = useCallback(async ({ type, data }) => {
     // Only allow one scan per session
@@ -352,6 +494,194 @@ export default function App() {
     }
   };
 
+  // Calculate elapsed time for a playing team
+  const getElapsedTime = (startTime) => {
+    const start = new Date(startTime);
+    const elapsed = Date.now() - start.getTime();
+    const minutes = Math.floor(elapsed / 60000);
+    const seconds = Math.floor((elapsed % 60000) / 1000);
+    return { minutes, seconds, totalSeconds: Math.floor(elapsed / 1000) };
+  };
+
+  // Format time as MM:SS
+  const formatTime = (minutes, seconds) => {
+    return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+  };
+
+  // Check if user can remove teams (next 1-3 teams in queue)
+  // Check if user can remove teams: must be first in waiting queue
+  const canRemoveTeams = () => {
+    if (!userEntry || !courtId) return false;
+    // Filter out playing teams to get waiting queue
+    const playingTeamIds = new Set(playingTeams.map(t => t.entryId));
+    const waitingQueue = queue.filter(entry => !playingTeamIds.has(entry.id));
+    
+    // User must be first in the waiting queue
+    if (waitingQueue.length === 0) return false;
+    return waitingQueue[0].id === userEntry.id;
+  };
+
+  // Handle joining a slot
+  const handleJoinSlot = async (slotIndex) => {
+    console.log('Joining slot:', { slotIndex, courtId, userEntry: userEntry?.id });
+    if (!courtId || !userEntry) {
+      Alert.alert('Error', 'You must be in the queue to join a slot.');
+      return;
+    }
+    
+    try {
+      let courtIdString = typeof courtId === 'string' ? courtId : String(courtId);
+      console.log('Calling joinSlot API:', { courtId: courtIdString, slotIndex, entryId: userEntry.id, display_name: userEntry.display_name });
+      const result = await joinSlot(courtIdString, slotIndex, userEntry.id, userEntry.display_name);
+      console.log('Join slot result:', result);
+      
+      // Update slots and gameStartTime from response
+      if (result.slots) {
+        setSlots(result.slots);
+        slotsRef.current = result.slots; // Update ref for real-time handler
+        lastSlotUpdateRef.current = Date.now(); // Mark slots as just updated
+        const teams = result.slots.filter(slot => slot !== null);
+        setPlayingTeams(teams);
+      }
+      if (result.gameStartTime !== undefined) {
+        setGameStartTime(result.gameStartTime);
+      }
+      
+      // Update queue from response
+      if (result.queue) {
+        setQueue(result.queue);
+        const updatedUserEntry = result.queue.find(item => item.id === userEntry?.id);
+        if (updatedUserEntry) {
+          console.log('Found userEntry in joinSlot queue response, updating:', updatedUserEntry.id);
+          setUserEntry(updatedUserEntry);
+          userEntryRef.current = updatedUserEntry; // Update ref immediately
+        } else {
+          // User might be in a slot but still in queue (just filtered from display)
+          // Since they just joined a slot, they should still be in the queue
+          // Keep the existing userEntry - don't clear it
+          console.log('User in slot, keeping existing userEntry (not found in queue response but in slot)');
+          // Don't clear userEntry - they're in a slot which means they're still valid
+          // Keep the ref as is - userEntryRef.current should already be set
+        }
+      } else {
+        // Fallback: reload queue if not in response
+        const updatedQueue = await getQueue(courtIdString);
+        setQueue(updatedQueue.queue);
+        const updatedUserEntry = updatedQueue.queue.find(item => item.id === userEntry?.id);
+        if (updatedUserEntry) {
+          console.log('Found userEntry in reloaded queue, updating:', updatedUserEntry.id);
+          setUserEntry(updatedUserEntry);
+          userEntryRef.current = updatedUserEntry; // Update ref immediately
+        } else {
+          // User is in a slot, keep existing userEntry
+          console.log('User in slot, keeping existing userEntry (not found in reloaded queue but in slot)');
+          // Keep the ref as is - userEntryRef.current should already be set
+        }
+      }
+
+      lastSlotUpdateRef.current = Date.now(); // Mark slots as recently updated
+      console.log('Slot join complete, slots:', result.slots, 'userEntry:', userEntryRef.current?.id);
+    } catch (error) {
+      console.error('Error joining slot:', error);
+      Alert.alert('Error', error.message || 'Failed to join slot. Please try again.');
+    }
+  };
+
+  // Handle removing a playing team
+  const handleRemoveTeam = (team) => {
+    if (!gameStartTime) {
+      Alert.alert('Error', 'Game has not started yet.');
+      return;
+    }
+    
+    const elapsed = getElapsedTime(gameStartTime);
+    Alert.alert(
+      'Remove Team?',
+      `Remove ${cleanDisplayName(team.display_name)} from the court?\n\nGame has been running for ${elapsed.minutes} minutes.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              if (!courtId) return;
+              let courtIdString = typeof courtId === 'string' ? courtId : String(courtId);
+              await removePlayingTeam(courtIdString, team.entryId);
+              await loadPlayingTeams();
+              // Reload queue
+              const updatedQueue = await getQueue(courtIdString);
+              setQueue(updatedQueue.queue);
+              const updatedUserEntry = updatedQueue.queue.find(item => item.id === userEntry?.id);
+              if (updatedUserEntry) {
+                setUserEntry(updatedUserEntry);
+              }
+            } catch (error) {
+              console.error('Error removing team:', error);
+              Alert.alert('Error', 'Failed to remove team. Please try again.');
+            }
+          }
+        }
+      ]
+    );
+  };
+
+  // Handle extending play time
+  const handleExtendTime = (team) => {
+    Alert.alert(
+      'Extend Play Time?',
+      `Extend play time for ${cleanDisplayName(team.display_name)}?\n\nThis will reset their timer and add 5 more minutes.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Extend',
+          onPress: async () => {
+            try {
+              if (!courtId) return;
+              let courtIdString = typeof courtId === 'string' ? courtId : String(courtId);
+              await extendPlayTime(courtIdString, team.entryId);
+              await loadPlayingTeams();
+            } catch (error) {
+              console.error('Error extending time:', error);
+              Alert.alert('Error', 'Failed to extend time. Please try again.');
+            }
+          }
+        }
+      ]
+    );
+  };
+
+  // Handle timer prompt (15 minutes)
+  const handleTimerPrompt = (team) => {
+    const elapsed = getElapsedTime(team.startTime);
+    Alert.alert(
+      'Still Playing?',
+      `${cleanDisplayName(team.display_name)} has been playing for ${elapsed.minutes} minutes. Are they still playing?`,
+      [
+        {
+          text: 'Yes, Still Playing',
+          onPress: async () => {
+            await handleExtendTime(team);
+          }
+        },
+        {
+          text: 'No, Remove Them',
+          style: 'destructive',
+          onPress: async () => {
+            await handleRemoveTeam(team);
+          }
+        }
+      ],
+      { cancelable: false }
+    );
+    // Clear the prompt
+    setTimerPrompts(prev => {
+      const newPrompts = { ...prev };
+      delete newPrompts[team.entryId];
+      return newPrompts;
+    });
+  };
+
   // Welcome Screen
   if (currentView === 'welcome') {
     return (
@@ -475,6 +805,9 @@ export default function App() {
 
   // Queue Screen
   if (currentView === 'queue') {
+    const userCanRemove = canRemoveTeams();
+    const userPosition = userEntry?.position || 0;
+    
     return (
       <SafeAreaView style={styles.container}>
         <StatusBar barStyle="light-content" backgroundColor="#111" />
@@ -488,32 +821,132 @@ export default function App() {
         </View>
         
         <View style={styles.queueContent}>
-          {queue.length === 0 ? (
-            <Text style={styles.emptyQueue}>No one in queue</Text>
-          ) : (
-            queue.map((entry, index) => (
-              <View 
-                key={entry.id} 
-                style={[
-                  styles.queueItem,
-                  entry.id === userEntry?.id && styles.currentUserItem,
-                  index === 0 && styles.nextUpItem
-                ]}
-              >
-                <Text style={styles.queuePosition}>{index + 1}</Text>
-                <Text style={styles.queueName}>{cleanDisplayName(entry.display_name)}</Text>
-                {index === 0 && (
-                  <Text style={styles.nextUpLabel}>NEXT UP</Text>
-                )}
-                {entry.id === userEntry?.id && (
-                  <Text style={styles.youLabel}>You</Text>
-                )}
+          {/* Playing Slots Section - Always show 2 slots */}
+          <View style={styles.playingSection}>
+            <Text style={styles.playingSectionTitle}>Court Slots</Text>
+            {/* Single timer when game is active */}
+            {gameStartTime && slots[0] !== null && slots[1] !== null && (
+              <View style={styles.gameTimerContainer}>
+                <Ionicons name="time-outline" size={20} color="#FBAE17" />
+                <Text style={styles.gameTimerText}>
+                  {(() => {
+                    const elapsed = getElapsedTime(gameStartTime);
+                    return formatTime(elapsed.minutes, elapsed.seconds);
+                  })()}
+                </Text>
               </View>
-            ))
-          )}
-    </View>
+            )}
+            
+            {/* Two slots side by side */}
+            <View style={styles.slotsContainer}>
+              {[0, 1].map((slotIndex) => {
+                const slot = slots[slotIndex];
+                const isOccupied = slot !== null;
+                const isUser = slot && slot.entryId === userEntry?.id;
+                const canJoin = !isOccupied && userEntry && queue.some(e => e.id === userEntry.id);
+                const showRemoveButton = canRemoveTeams() && gameStartTime && (() => {
+                  if (!gameStartTime) return false;
+                  const elapsed = getElapsedTime(gameStartTime);
+                  return elapsed.minutes >= 12;
+                })();
+                
+                return (
+                  <TouchableOpacity
+                    key={slotIndex}
+                    style={[
+                      styles.slotCard,
+                      isOccupied && styles.slotCardOccupied,
+                      !isOccupied && canJoin && styles.slotCardClickable,
+                      isUser && styles.slotCardUser
+                    ]}
+                    onPress={() => {
+                      console.log('Slot clicked:', { slotIndex, isOccupied, canJoin, userEntry: userEntry?.id, queueLength: queue.length });
+                      if (!isOccupied && canJoin) {
+                        handleJoinSlot(slotIndex);
+                      } else {
+                        console.log('Slot click ignored:', { isOccupied, canJoin, userEntry: !!userEntry });
+                      }
+                    }}
+                    disabled={!canJoin || isOccupied}
+                  >
+                    {isOccupied ? (
+                      <>
+                        <Text style={styles.slotTeamName}>
+                          {cleanDisplayName(slot.display_name)}
+                        </Text>
+                        {isUser && (
+                          <Text style={styles.slotYouLabel}>You</Text>
+                        )}
+                        {showRemoveButton && (
+                          <TouchableOpacity
+                            style={styles.slotRemoveButton}
+                            onPress={() => handleRemoveTeam(slot)}
+                          >
+                            <Text style={styles.slotRemoveButtonText}>Remove</Text>
+                          </TouchableOpacity>
+                        )}
+                      </>
+                    ) : (
+                      <>
+                        <Ionicons name="add-circle-outline" size={32} color="#666" />
+                        <Text style={styles.slotEmptyText}>Empty Slot</Text>
+                        {canJoin && (
+                          <Text style={styles.slotClickToJoin}>Tap to join</Text>
+                        )}
+                      </>
+                    )}
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          </View>
+
+          {/* Queue Section */}
+          <View style={styles.queueSection}>
+            <Text style={styles.queueSectionTitle}>
+              {(slots[0] !== null || slots[1] !== null) ? 'Waiting in Queue' : 'Queue'}
+            </Text>
+            {(() => {
+              // Filter out teams that are in slots
+              const slotTeamIds = new Set(slots.filter(s => s !== null).map(s => s.entryId));
+              const waitingQueue = queue.filter(entry => !slotTeamIds.has(entry.id));
+              
+              if (waitingQueue.length === 0) {
+                return <Text style={styles.emptyQueue}>No one waiting in queue</Text>;
+              }
+              
+              return waitingQueue.map((entry, index) => {
+                const isUser = entry.id === userEntry?.id;
+                const isNextUp = index === 0 && (slots[0] !== null || slots[1] !== null);
+                
+                return (
+                  <View 
+                    key={entry.id} 
+                    style={[
+                      styles.queueItem,
+                      isUser && styles.currentUserItem,
+                      isNextUp && styles.nextUpItem
+                    ]}
+                  >
+                    <Text style={styles.queuePosition}>{index + 1}</Text>
+                    <Text style={styles.queueName}>{cleanDisplayName(entry.display_name)}</Text>
+                    {isNextUp && (
+                      <Text style={styles.nextUpLabel}>NEXT UP</Text>
+                    )}
+                    {isUser && (
+                      <Text style={styles.youLabel}>You</Text>
+                    )}
+                    {isUser && userCanRemove && (
+                      <Text style={styles.canRemoveLabel}>Can Remove Teams</Text>
+                    )}
+                  </View>
+                );
+              });
+            })()}
+          </View>
+        </View>
       </SafeAreaView>
-  );
+    );
   }
 
   return null;
@@ -716,6 +1149,205 @@ const styles = StyleSheet.create({
     flex: 1,
     padding: 20,
   },
+  playingSection: {
+    marginBottom: 24,
+  },
+  playingSectionTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#FBAE17',
+    marginBottom: 12,
+  },
+  playingTeamCard: {
+    backgroundColor: '#222',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 12,
+    borderWidth: 2,
+    borderColor: '#333',
+  },
+  playingTeamInfo: {
+    marginBottom: 12,
+  },
+  playingTeamName: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: 'white',
+    marginBottom: 8,
+  },
+  playingTeamTimer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  playingTeamTime: {
+    fontSize: 16,
+    color: '#FBAE17',
+    marginLeft: 6,
+    fontWeight: '600',
+  },
+  playingTeamTimeWarning: {
+    color: '#ff6b6b',
+  },
+  playingTeamExtensions: {
+    fontSize: 12,
+    color: '#999',
+    marginTop: 4,
+  },
+  waitingForOpponent: {
+    fontSize: 14,
+    color: '#999',
+    fontStyle: 'italic',
+    marginTop: 4,
+  },
+  emptySlotCard: {
+    backgroundColor: '#1a1a1a',
+    borderColor: '#444',
+    borderStyle: 'dashed',
+    opacity: 0.6,
+  },
+  emptySlotText: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#666',
+    marginBottom: 4,
+  },
+  emptySlotSubtext: {
+    fontSize: 14,
+    color: '#555',
+    fontStyle: 'italic',
+  },
+  gameTimerContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#222',
+    padding: 12,
+    borderRadius: 8,
+    marginBottom: 16,
+  },
+  gameTimerText: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#FBAE17',
+    marginLeft: 8,
+  },
+  slotsContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  slotCard: {
+    flex: 1,
+    backgroundColor: '#1a1a1a',
+    borderRadius: 12,
+    padding: 20,
+    borderWidth: 2,
+    borderColor: '#444',
+    borderStyle: 'dashed',
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 120,
+  },
+  slotCardClickable: {
+    borderColor: '#FBAE17',
+    borderStyle: 'solid',
+    backgroundColor: '#222',
+  },
+  slotCardOccupied: {
+    backgroundColor: '#222',
+    borderColor: '#333',
+    borderStyle: 'solid',
+  },
+  slotCardUser: {
+    borderColor: '#FBAE17',
+    borderWidth: 3,
+  },
+  slotTeamName: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: 'white',
+    marginBottom: 8,
+    textAlign: 'center',
+  },
+  slotYouLabel: {
+    fontSize: 12,
+    color: '#FBAE17',
+    fontWeight: '600',
+    marginBottom: 8,
+  },
+  slotEmptyText: {
+    fontSize: 16,
+    color: '#666',
+    marginTop: 8,
+    textAlign: 'center',
+  },
+  slotClickToJoin: {
+    fontSize: 12,
+    color: '#FBAE17',
+    marginTop: 4,
+    textAlign: 'center',
+  },
+  slotRemoveButton: {
+    backgroundColor: '#dc3545',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 6,
+    marginTop: 8,
+  },
+  slotRemoveButtonText: {
+    color: 'white',
+    fontSize: 12,
+    fontWeight: 'bold',
+  },
+  removeTeamButton: {
+    backgroundColor: '#dc3545',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 8,
+    alignSelf: 'flex-start',
+  },
+  removeTeamButtonText: {
+    color: 'white',
+    fontSize: 14,
+    fontWeight: 'bold',
+  },
+  timerPromptBanner: {
+    backgroundColor: '#ff6b6b',
+    borderRadius: 8,
+    padding: 12,
+    marginTop: 12,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  timerPromptText: {
+    color: 'white',
+    fontSize: 14,
+    fontWeight: '600',
+    flex: 1,
+  },
+  timerPromptButton: {
+    backgroundColor: 'white',
+    paddingHorizontal: 16,
+    paddingVertical: 6,
+    borderRadius: 6,
+    marginLeft: 12,
+  },
+  timerPromptButtonText: {
+    color: '#ff6b6b',
+    fontSize: 14,
+    fontWeight: 'bold',
+  },
+  queueSection: {
+    flex: 1,
+  },
+  queueSectionTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#FBAE17',
+    marginBottom: 12,
+  },
   emptyQueue: {
     fontSize: 18,
     color: '#666',
@@ -774,6 +1406,18 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 4,
     borderRadius: 4,
+    marginLeft: 8,
+  },
+  canRemoveLabel: {
+    fontSize: 10,
+    color: '#FBAE17',
+    fontWeight: 'bold',
+    backgroundColor: '#FBAE17',
+    color: '#000',
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    borderRadius: 4,
+    marginLeft: 8,
   },
   
   // Name Input Screen

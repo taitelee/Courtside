@@ -62,3 +62,51 @@ export async function getCourtInfo(courtId) {
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }
+
+export async function getPlayingTeams(courtId) {
+  console.log("Getting playing teams for:", courtId);
+  const courtIdString = typeof courtId === 'string' ? courtId : String(courtId);
+  const encodedCourtId = encodeURIComponent(courtIdString);
+  const res = await fetch(`${API}/courts/${encodedCourtId}/playing`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function removePlayingTeam(courtId, entryId) {
+  console.log("Removing playing team:", { courtId, entryId });
+  const courtIdString = typeof courtId === 'string' ? courtId : String(courtId);
+  const encodedCourtId = encodeURIComponent(courtIdString);
+  const res = await fetch(`${API}/courts/${encodedCourtId}/remove-team`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ entryId })
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function extendPlayTime(courtId, entryId) {
+  console.log("Extending play time for:", { courtId, entryId });
+  const courtIdString = typeof courtId === 'string' ? courtId : String(courtId);
+  const encodedCourtId = encodeURIComponent(courtIdString);
+  const res = await fetch(`${API}/courts/${encodedCourtId}/extend`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ entryId })
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function joinSlot(courtId, slotIndex, entryId, display_name) {
+  console.log("Joining slot:", { courtId, slotIndex, entryId, display_name });
+  const courtIdString = typeof courtId === 'string' ? courtId : String(courtId);
+  const encodedCourtId = encodeURIComponent(courtIdString);
+  const res = await fetch(`${API}/courts/${encodedCourtId}/join-slot`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ slotIndex, entryId, display_name })
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
