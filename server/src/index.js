@@ -59,4 +59,7 @@ app.use("/devices", devicesRouter);
 
 io.on("connection", onSocketConnection);
 
+// Start the queue listener worker for push notifications
+require("../workers/queueListener");
+
 server.listen(8080, () => console.log("API on :8080 (using Supabase REST API)"));

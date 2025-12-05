@@ -69,6 +69,7 @@ r.post("/:id/leave", async (req, res) => {
   console.log("=============================");
 
   try {
+    // leaveTx will automatically check for next person and send notification
     const { queue, version, entry } = await leaveTx(courtId, entryId);
     broadcastQueueSync(courtId, queue, version);
     console.log("Leave successful, returning:", { entry, queueLength: queue.length, version });

@@ -5,6 +5,10 @@ const http = require('http');
 // In-memory join locks to prevent concurrent joins
 const joinLocks = new Map();
 
+// Timers for "up next" notifications - tracks entryId -> timeout
+// If they don't join a slot within 2 minutes, they're removed from queue
+const nextUpTimers = new Map();
+
 // Supabase configuration
 const SUPABASE_URL = 'https://phunvrocpkmmnnbfwwmw.supabase.co';
 const SUPABASE_SERVICE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBodW52cm9jcGttbW5uYmZ3d213Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2MDUwMjcwOCwiZXhwIjoyMDc2MDc4NzA4fQ.2iAwLDPm8msp5zRqrtVIuc4Q81y_sGQukaLrPUYiOtA';
@@ -220,6 +224,14 @@ async function joinTx(courtId, entryId, displayName, requestId = 'unknown', devi
     console.log('Court version updated');
 
     console.log(`[${requestId}] Join completed successfully for entryId: ${entryId}`);
+    
+    // Check if this person became first and send notification
+    if (position === 1) {
+      checkAndSendNotification(courtIdString).catch(err => {
+        console.error('Error checking notification after join:', err);
+      });
+    }
+    
     return {
       entry: { id: entryId, display_name: displayName, position },
       queue,
@@ -240,6 +252,9 @@ async function joinTx(courtId, entryId, displayName, requestId = 'unknown', devi
 async function leaveTx(courtId, entryId) {
   try {
     console.log('leaveTx called with:', { courtId, entryId, courtIdType: typeof courtId });
+    
+    // Clear any timer for this entry (they're leaving manually or being kicked)
+    clearNextUpTimer(entryId);
     
     // Ensure courtId is a string
     let courtIdString = courtId;
@@ -278,6 +293,14 @@ async function leaveTx(courtId, entryId) {
 
     // Get updated queue
     const queue = await supabaseRequest(`queue_entries?court_id=eq.${encodedCourtId}&order=position`);
+    
+    // Check if someone became first after someone left
+    // This will send notification and start timer for the next person
+    if (queue.length > 0) {
+      checkAndSendNotification(courtIdString).catch(err => {
+        console.error('Error checking notification after leave:', err);
+      });
+    }
     
     return { queue, version: 1 };
   } catch (error) {
@@ -573,6 +596,9 @@ async function joinSlot(courtId, slotIndex, entryId, displayName) {
       entry = newEntry;
     }
     
+    // Clear timer for this entry - they joined a slot!
+    clearNextUpTimer(entryId);
+    
     // Add team to the slot
     slots[slotIndex] = {
       entryId,
@@ -607,6 +633,13 @@ async function joinSlot(courtId, slotIndex, entryId, displayName) {
     
     // Get updated queue
     const queue = await supabaseRequest(`queue_entries?court_id=eq.${encodedCourtId}&order=position`);
+    
+    // Check if someone became first after joining a slot
+    if (queue.length > 0) {
+      checkAndSendNotification(courtId).catch(err => {
+        console.error('Error checking notification after join slot:', err);
+      });
+    }
     
     return { slots, gameStartTime: newGameStartTime, queue, version: (courtInfo.version || 0) + 1 };
   } catch (error) {
@@ -737,6 +770,13 @@ async function removePlayingTeam(courtId, entryId) {
     // Get updated queue
     const queue = await supabaseRequest(`queue_entries?court_id=eq.${encodedCourtId}&order=position`);
     
+    // Check if someone became first after team was removed (slot became empty)
+    if (queue.length > 0) {
+      checkAndSendNotification(courtId).catch(err => {
+        console.error('Error checking notification after remove team:', err);
+      });
+    }
+    
     return { queue, version: (courtInfo.version || 0) + 1 };
   } catch (error) {
     console.error('Error removing playing team:', error);
@@ -800,6 +840,208 @@ async function registerPushToken(deviceId, expoToken) {
   } catch (error) {
     console.error('Error registering push token:', error);
     throw error;
+  }
+}
+
+// Helper function to clear timer for an entry
+function clearNextUpTimer(entryId) {
+  if (nextUpTimers.has(entryId)) {
+    clearTimeout(nextUpTimers.get(entryId));
+    nextUpTimers.delete(entryId);
+    console.log(`Cleared timer for entry ${entryId}`);
+  }
+}
+
+// Helper function to start 2-minute timer for "up next" person
+function startNextUpTimer(courtId, entryId) {
+  // Clear any existing timer for this entry
+  clearNextUpTimer(entryId);
+  
+  console.log(`Starting 2-minute timer for entry ${entryId} to join a slot`);
+  
+  const timer = setTimeout(async () => {
+    console.log(`⏰ Timer expired for entry ${entryId} - removing from queue`);
+    nextUpTimers.delete(entryId);
+    
+    try {
+      // Remove them from queue
+      // leaveTx will automatically:
+      // 1. Remove the entry and reorder positions
+      // 2. Check if next person should be notified (via checkAndSendNotification)
+      // 3. Send notification and start timer for next person
+      const { queue, version } = await leaveTx(courtId, entryId);
+      console.log(`✅ Removed entry ${entryId} from queue due to timeout`);
+      
+      // Broadcast queue update to all clients so frontend updates in real-time
+      const { broadcastQueueSync } = require("../services/broadcast");
+      broadcastQueueSync(courtId, queue, version);
+      console.log(`📢 Broadcasted queue update after timeout removal`);
+    } catch (error) {
+      console.error(`Error removing entry ${entryId} after timeout:`, error);
+    }
+  }, 2 * 60 * 1000); // 2 minutes
+  
+  nextUpTimers.set(entryId, timer);
+}
+
+// Helper function to check and send notification to first waiting person
+async function checkAndSendNotification(courtId) {
+  try {
+    const encodedCourtId = encodeURIComponent(courtId);
+    
+    // Get court info to check slots
+    const courtInfo = await getCourtInfo(courtId);
+    const playingTeams = courtInfo.playing_teams || [];
+    
+    // Check if slots are full (both slots occupied)
+    const slots = [null, null];
+    if (Array.isArray(playingTeams)) {
+      if (playingTeams.length === 2) {
+        // New format: array of 2 slots with nulls preserved
+        playingTeams.forEach((team, index) => {
+          if (team && index < 2) {
+            slots[index] = team;
+          }
+        });
+      } else {
+        // Old format: filtered array
+        playingTeams.forEach((team, index) => {
+          if (team && index < 2) {
+            const slotIdx = team.slotIndex !== undefined ? team.slotIndex : index;
+            if (slotIdx >= 0 && slotIdx < 2) {
+              slots[slotIdx] = team;
+            }
+          }
+        });
+      }
+    }
+    
+    const occupiedSlots = slots.filter(slot => slot !== null).length;
+    
+    // Only send notification if at least one slot is empty
+    if (occupiedSlots >= 2) {
+      console.log('Both slots are full, not sending notification');
+      // Clear any existing timers since slots are full
+      nextUpTimers.forEach((timer, entryId) => {
+        clearNextUpTimer(entryId);
+      });
+      return;
+    }
+    
+    // Get entryIds that are in slots
+    const entryIdsInSlots = new Set();
+    slots.forEach((team) => {
+      if (team && team.entryId) {
+        entryIdsInSlots.add(team.entryId);
+      }
+    });
+    
+    // Get queue ordered by position
+    const queue = await supabaseRequest(`queue_entries?court_id=eq.${encodedCourtId}&order=position`);
+    
+    if (queue.length === 0) {
+      // Clear any existing timers since queue is empty
+      nextUpTimers.forEach((timer, entryId) => {
+        clearNextUpTimer(entryId);
+      });
+      return; // No one in queue
+    }
+    
+    // Find first person NOT in a slot
+    const firstWaiting = queue.find(entry => !entryIdsInSlots.has(entry.id));
+    
+    if (!firstWaiting || firstWaiting.position !== 1) {
+      // Clear any existing timers since no one is first waiting
+      nextUpTimers.forEach((timer, entryId) => {
+        clearNextUpTimer(entryId);
+      });
+      return; // No one at position 1 who's waiting
+    }
+    
+    // Clear timer for any previous "up next" person (someone else is now first)
+    nextUpTimers.forEach((timer, entryId) => {
+      if (entryId !== firstWaiting.id) {
+        clearNextUpTimer(entryId);
+      }
+    });
+    
+    // If this person already has a timer, don't send another notification
+    if (nextUpTimers.has(firstWaiting.id)) {
+      console.log(`Entry ${firstWaiting.id} already has a timer, skipping notification`);
+      return;
+    }
+    
+    if (!firstWaiting.device_id) {
+      console.log('First waiting person has no device_id, skipping notification');
+      return;
+    }
+    
+    // Get push token
+    const tokenRows = await supabaseRequest(`device_push_tokens?device_id=eq.${firstWaiting.device_id}`);
+    
+    if (!tokenRows || tokenRows.length === 0 || !tokenRows[0].expo_push_token) {
+      console.log('No push token found for first waiting person');
+      return;
+    }
+    
+    const expoToken = tokenRows[0].expo_push_token;
+    const courtName = courtInfo.name || 'the court';
+    
+    const message = {
+      to: expoToken,
+      title: 'You\'re next!',
+      body: `You're now first in line for ${courtName}. Please join a slot within 2 minutes.`,
+      data: { courtId: courtId, entryId: firstWaiting.id },
+    };
+    
+    try {
+      console.log('Sending push notification to first waiting person:', firstWaiting.display_name);
+      
+      const postData = JSON.stringify(message);
+      const options = {
+        hostname: 'exp.host',
+        path: '/--/api/v2/push/send',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(postData)
+        }
+      };
+      
+      const req = https.request(options, (res) => {
+        let data = '';
+        res.on('data', (chunk) => {
+          data += chunk;
+        });
+        res.on('end', () => {
+          try {
+            const responseData = JSON.parse(data);
+            console.log('Push notification result:', res.statusCode, responseData);
+            if (res.statusCode === 200) {
+              console.log('✅ Push notification sent successfully!');
+              // Start 2-minute timer after successful notification
+              startNextUpTimer(courtId, firstWaiting.id);
+            } else {
+              console.error('Failed to send push notification:', res.statusCode, responseData);
+            }
+          } catch (e) {
+            console.log('Push notification result:', res.statusCode, data);
+          }
+        });
+      });
+      
+      req.on('error', (e) => {
+        console.error('Error sending push notification:', e);
+      });
+      
+      req.write(postData);
+      req.end();
+    } catch (e) {
+      console.error('Error sending push notification:', e);
+    }
+  } catch (error) {
+    console.error('Error in checkAndSendNotification:', error);
+    // Don't throw - this is a background task
   }
 }
 
