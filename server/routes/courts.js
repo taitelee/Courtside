@@ -1,5 +1,5 @@
 const { Router } = require("express");
-const { getQueue, joinTx, leaveTx, advanceTx, getCourtInfo } = require("../db/queries");
+const { getQueue, joinTx, leaveTx, advanceTx, getCourtInfo, getPlayingTeams, removePlayingTeam, extendPlayTime, joinSlot } = require("../db/queries");
 const { broadcastQueueSync } = require("../services/broadcast");
 
 const r = Router();
@@ -85,6 +85,66 @@ r.post("/:id/advance", async (req, res) => {
   const { queue, version } = await advanceTx(courtId);
   broadcastQueueSync(courtId, queue, version);
   res.json({ queue, version });
+});
+
+r.get("/:id/playing", async (req, res) => {
+  const { id } = req.params;
+  const courtId = decodeURIComponent(id);
+  try {
+    const playingTeams = await getPlayingTeams(courtId);
+    res.json({ playingTeams });
+  } catch (error) {
+    console.error("Error getting playing teams:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+r.post("/:id/remove-team", async (req, res) => {
+  const { id } = req.params;
+  const { entryId } = req.body;
+  const courtId = decodeURIComponent(id);
+  
+  try {
+    const { queue, version } = await removePlayingTeam(courtId, entryId);
+    broadcastQueueSync(courtId, queue, version);
+    res.json({ queue, version });
+  } catch (error) {
+    console.error("Error removing team:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+r.post("/:id/extend", async (req, res) => {
+  const { id } = req.params;
+  const { entryId } = req.body;
+  const courtId = decodeURIComponent(id);
+  
+  try {
+    const playingTeams = await extendPlayTime(courtId, entryId);
+    const courtInfo = await getCourtInfo(courtId);
+    const queue = await getQueue(courtId);
+    broadcastQueueSync(courtId, queue.queue, courtInfo.version);
+    res.json({ playingTeams, version: courtInfo.version });
+  } catch (error) {
+    console.error("Error extending play time:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+r.post("/:id/join-slot", async (req, res) => {
+  const { id } = req.params;
+  const { slotIndex, entryId, display_name } = req.body;
+  const courtId = decodeURIComponent(id);
+  
+  try {
+    const { slots, gameStartTime, queue, version } = await joinSlot(courtId, slotIndex, entryId, display_name);
+    const courtInfo = await getCourtInfo(courtId); // Get updated court info for version
+    broadcastQueueSync(courtId, queue, courtInfo.version);
+    res.json({ slots, gameStartTime, queue, version: courtInfo.version });
+  } catch (error) {
+    console.error("Error joining slot:", error);
+    res.status(500).json({ error: error.message });
+  }
 });
 
 module.exports = r;
