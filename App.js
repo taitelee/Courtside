@@ -38,6 +38,7 @@ export default function App() {
   const [slots, setSlots] = useState([null, null]); // [slot0, slot1]
   const [timerPrompts, setTimerPrompts] = useState({}); // { entryId: { show: boolean, time: number } }
   const [timerTick, setTimerTick] = useState(0); // Force re-render for timer updates
+  const [nextUpTimerStart, setNextUpTimerStart] = useState(null); // Timestamp when user became "up next"
   const lastSlotUpdateRef = useRef(null); // Track when slots were last updated to prevent overwrites
   const slotsRef = useRef([null, null]); // Ref to track current slots state for real-time updates
   const userEntryRef = useRef(null); // Ref to track current userEntry for real-time updates
@@ -49,6 +50,20 @@ export default function App() {
       shouldSetBadge: false,
     }),
   });
+
+  // Listen for push notifications to start timer
+  useEffect(() => {
+    const subscription = Notifications.addNotificationReceivedListener(notification => {
+      console.log('Notification received:', notification);
+      const data = notification.request.content.data;
+      if (data && data.courtId === courtId && data.entryId === userEntry?.id) {
+        console.log('User is up next! Starting 2-minute timer');
+        setNextUpTimerStart(Date.now());
+      }
+    });
+
+    return () => subscription.remove();
+  }, [courtId, userEntry]);
 
   // Load or generate persistent device ID
   useEffect(() => {
@@ -105,15 +120,62 @@ export default function App() {
       console.log('Obtained Expo push token:', expoToken);
       if (!expoToken) return;
 
-      console.log('Registering push token with backend:', { deviceId, expoToken });
-      const res = await registerPushNotificationToken(deviceId, expoToken);
-      console.log('Push token registration response status:', res.status);
+      // Retry registration with exponential backoff
+      let retries = 0;
+      const maxRetries = 5;
+      const retryDelay = (attempt) => Math.min(1000 * Math.pow(2, attempt), 10000); // Max 10 seconds
+      let lastError = null;
 
-      if (!res.ok) {
-        console.error("Failed to register token:", await res.text());
-      } else {
-        console.log("Registered push token for device:", deviceId);
-      }
+      const registerWithRetry = async () => {
+        while (retries < maxRetries) {
+          try {
+            console.log(`Registering push token (attempt ${retries + 1}/${maxRetries})...`);
+            const res = await registerPushNotificationToken(deviceId, expoToken);
+            
+            if (!res) {
+              retries++;
+              if (retries < maxRetries) {
+                const delay = retryDelay(retries - 1);
+                await new Promise(resolve => setTimeout(resolve, delay));
+                continue;
+              } else {
+                lastError = new Error("Registration returned null");
+                break;
+              }
+            }
+
+            if (!res.ok) {
+              const text = await res.text().catch(() => '');
+              lastError = new Error(`HTTP ${res.status}: ${text}`);
+              retries++;
+              if (retries < maxRetries) {
+                const delay = retryDelay(retries - 1);
+                await new Promise(resolve => setTimeout(resolve, delay));
+                continue;
+              } else {
+                break;
+              }
+            } else {
+              console.log("✅ Successfully registered push token for device:", deviceId);
+              return; // Success!
+            }
+          } catch (error) {
+            lastError = error;
+            retries++;
+            if (retries < maxRetries) {
+              const delay = retryDelay(retries - 1);
+              await new Promise(resolve => setTimeout(resolve, delay));
+            }
+          }
+        }
+        
+        // Only log error if all retries failed
+        if (lastError) {
+          console.error("❌ Failed to register push token after all retries:", lastError.message);
+        }
+      };
+
+      await registerWithRetry();
     })();
   }, [deviceId]);
 
@@ -151,6 +213,20 @@ export default function App() {
           // This prevents clearing userEntry right after joining a slot due to race conditions
           console.log('User not found in queue and not in slot (and slots not recently updated), clearing userEntry');
           setUserEntry(null);
+          // Clear "up next" timer if user was removed
+          setNextUpTimerStart(null);
+          // If user was kicked, show alert and navigate back
+          if (currentView === 'queue') {
+            Alert.alert(
+              'Removed from Queue',
+              'You were removed from the queue for not joining a slot in time.',
+              [{ text: 'OK', onPress: () => {
+                setCurrentView('scanner');
+                setCourtId(null);
+                setQueue([]);
+              }}]
+            );
+          }
         } else if (userInSlot) {
           console.log('User in slot, keeping userEntry even though not in queue display');
         } else {
@@ -233,6 +309,37 @@ export default function App() {
     }
   }, [currentView, courtId]);
 
+  // Check if user is "up next" and start timer
+  useEffect(() => {
+    if (currentView === 'queue' && userEntry && queue.length > 0) {
+      const slotTeamIds = new Set(slots.filter(s => s !== null).map(s => s.entryId));
+      const waitingQueue = queue.filter(entry => !slotTeamIds.has(entry.id));
+      const occupiedSlots = slots.filter(slot => slot !== null).length;
+      
+      // User is "up next" if:
+      // 1. They're first in waiting queue
+      // 2. At least one slot is empty
+      // 3. They're not in a slot
+      const isUpNext = waitingQueue.length > 0 && 
+                       waitingQueue[0].id === userEntry.id &&
+                       occupiedSlots < 2 &&
+                       !slotTeamIds.has(userEntry.id);
+      
+      if (isUpNext && !nextUpTimerStart) {
+        // User just became up next, start timer
+        console.log('User is up next! Starting 2-minute timer');
+        setNextUpTimerStart(Date.now());
+      } else if (!isUpNext && nextUpTimerStart) {
+        // User is no longer up next, clear timer
+        console.log('User is no longer up next, clearing timer');
+        setNextUpTimerStart(null);
+      }
+    } else if (currentView !== 'queue') {
+      // Clear timer if not on queue screen
+      setNextUpTimerStart(null);
+    }
+  }, [currentView, userEntry, queue, slots, nextUpTimerStart]);
+
   // Update timer display every second - single timer when game is active
   useEffect(() => {
     if (currentView === 'queue' && gameStartTime && slots[0] !== null && slots[1] !== null) {
@@ -264,6 +371,19 @@ export default function App() {
       setTimerTick(prev => prev + 1);
     }
   }, [currentView, gameStartTime, slots]); // Depend on gameStartTime and slots
+
+  // Update "up next" timer display every second
+  useEffect(() => {
+    if (currentView === 'queue' && nextUpTimerStart) {
+      const updateTimer = () => {
+        setTimerTick(prev => prev + 1);
+      };
+      
+      updateTimer();
+      const interval = setInterval(updateTimer, 1000);
+      return () => clearInterval(interval);
+    }
+  }, [currentView, nextUpTimerStart]);
 
   const handleBarCodeScanned = useCallback(async ({ type, data }) => {
     // Only allow one scan per session
@@ -572,6 +692,8 @@ export default function App() {
         lastSlotUpdateRef.current = Date.now(); // Mark slots as just updated
         const teams = result.slots.filter(slot => slot !== null);
         setPlayingTeams(teams);
+        // Clear "up next" timer since user joined a slot
+        setNextUpTimerStart(null);
       }
       if (result.gameStartTime !== undefined) {
         setGameStartTime(result.gameStartTime);
@@ -931,6 +1053,40 @@ export default function App() {
             </View>
           </View>
 
+          {/* "Up Next" Timer Banner - Show when user is up next */}
+          {(() => {
+            const slotTeamIds = new Set(slots.filter(s => s !== null).map(s => s.entryId));
+            const waitingQueue = queue.filter(entry => !slotTeamIds.has(entry.id));
+            const occupiedSlots = slots.filter(slot => slot !== null).length;
+            const isUpNext = nextUpTimerStart && 
+                            waitingQueue.length > 0 && 
+                            waitingQueue[0].id === userEntry?.id &&
+                            occupiedSlots < 2;
+            
+            if (isUpNext) {
+              const elapsed = Date.now() - nextUpTimerStart;
+              const remaining = Math.max(0, 120000 - elapsed); // 2 minutes = 120000ms
+              const minutes = Math.floor(remaining / 60000);
+              const seconds = Math.floor((remaining % 60000) / 1000);
+              const isWarning = remaining < 30000; // Less than 30 seconds
+              
+              return (
+                <View style={[styles.nextUpTimerBanner, isWarning && styles.nextUpTimerBannerWarning]}>
+                  <View style={styles.nextUpTimerContent}>
+                    <Ionicons name="time" size={24} color="#fff" />
+                    <View style={styles.nextUpTimerText}>
+                      <Text style={styles.nextUpTimerTitle}>You're Up Next!</Text>
+                      <Text style={styles.nextUpTimerSubtitle}>
+                        Join a slot within {minutes}:{seconds.toString().padStart(2, '0')}
+                      </Text>
+                    </View>
+                  </View>
+                </View>
+              );
+            }
+            return null;
+          })()}
+
           {/* Queue Section */}
           <View style={styles.queueSection}>
             <Text style={styles.queueSectionTitle}>
@@ -947,7 +1103,8 @@ export default function App() {
               
               return waitingQueue.map((entry, index) => {
                 const isUser = entry.id === userEntry?.id;
-                const isNextUp = index === 0 && (slots[0] !== null || slots[1] !== null);
+                const occupiedSlots = slots.filter(slot => slot !== null).length;
+                const isNextUp = index === 0 && occupiedSlots < 2;
                 
                 return (
                   <View 
@@ -1448,6 +1605,37 @@ const styles = StyleSheet.create({
     paddingVertical: 3,
     borderRadius: 4,
     marginLeft: 8,
+  },
+  nextUpTimerBanner: {
+    backgroundColor: '#4CAF50',
+    padding: 16,
+    borderRadius: 12,
+    marginBottom: 16,
+    borderWidth: 2,
+    borderColor: '#66BB6A',
+  },
+  nextUpTimerBannerWarning: {
+    backgroundColor: '#ff6b6b',
+    borderColor: '#ff8787',
+  },
+  nextUpTimerContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  nextUpTimerText: {
+    marginLeft: 12,
+    flex: 1,
+  },
+  nextUpTimerTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#fff',
+    marginBottom: 4,
+  },
+  nextUpTimerSubtitle: {
+    fontSize: 16,
+    color: '#fff',
+    fontWeight: '600',
   },
   
   // Name Input Screen

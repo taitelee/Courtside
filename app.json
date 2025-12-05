@@ -23,10 +23,18 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "permissions": ["CAMERA"]
+      "permissions": [
+        "CAMERA"
+      ]
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "extra": {
+      "eas": {
+        "projectId": "67f3b783-8d0d-4cb2-a81a-f7745ce4bf7a"
+      }
+    },
+    "owner": "taiteleee"
   }
 }

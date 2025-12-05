@@ -113,28 +113,31 @@ export async function joinSlot(courtId, slotIndex, entryId, display_name) {
 }
 
 export async function registerPushNotificationToken(deviceId, expoToken) {
-  console.log("Upserting or adding deviceId <-> Expo push token:", { deviceId, expoToken });
-
   try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+
     const res = await fetch(`${API}/devices/register-push-token`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ deviceId, expoToken }),
+      signal: controller.signal,
     });
 
-    console.log("register-push-token response status:", res.status);
+    clearTimeout(timeoutId);
 
     if (!res.ok) {
       const text = await res.text().catch(() => '');
-      console.error("Backend returned error:", res.status, text);
-      throw new Error(`HTTP ${res.status}`);
+      throw new Error(`HTTP ${res.status}: ${text}`);
     }
 
     const data = await res.json();
-    console.log("register-push-token response JSON:", data);
     return res;
   } catch (err) {
-    console.error("Error in registerPushNotificationToken:", err);
+    if (err.name === 'AbortError') {
+      throw new Error("Request timeout - server may be unreachable");
+    }
+    // Re-throw so the retry logic can handle it
     throw err;
   }
 }

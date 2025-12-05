@@ -36,17 +36,47 @@ export async function registerForPushNotificationsAsync() {
     }
 
     // Get projectId if available (important for newer Expo)
+    // Try multiple sources for projectId
     const projectId =
-      Constants.expoConfig?.extra?.eas?.projectId ??
-      Constants.easConfig?.projectId;
+      process.env.EXPO_PUBLIC_PROJECT_ID ||
+      (Constants.expoConfig?.extra?.eas?.projectId ??
+      Constants.easConfig?.projectId ??
+      Constants.manifest2?.extra?.eas?.projectId ??
+      Constants.manifest?.extra?.eas?.projectId);
 
     console.log('Using projectId for token:', projectId);
 
     let tokenResult;
+    
+    // Try to get push token - attempt with projectId first if available, then without
     if (projectId) {
-      tokenResult = await Notifications.getExpoPushTokenAsync({ projectId });
+      try {
+        tokenResult = await Notifications.getExpoPushTokenAsync({ projectId });
+        console.log('Successfully got push token with projectId');
+      } catch (tokenError) {
+        console.log('Failed to get token with projectId, trying without projectId...', tokenError.message);
+        // Try without projectId as fallback (might work in some cases)
+        try {
+          tokenResult = await Notifications.getExpoPushTokenAsync();
+          console.log('Successfully got push token without projectId');
+        } catch (fallbackError) {
+          console.warn('Could not get push token:', fallbackError.message);
+          // In Expo Go with SDK 53+, push notifications don't work, but we'll still try
+          // Return null gracefully
+          return null;
+        }
+      }
     } else {
-      tokenResult = await Notifications.getExpoPushTokenAsync();
+      // No projectId, try without it (for older SDKs or testing)
+      try {
+        tokenResult = await Notifications.getExpoPushTokenAsync();
+        console.log('Successfully got push token without projectId');
+      } catch (fallbackError) {
+        console.warn('Could not get push token without projectId:', fallbackError.message);
+        console.warn('Note: Push notifications may not work in Expo Go with SDK 53+.');
+        console.warn('Consider using a development build for full push notification support.');
+        return null;
+      }
     }
 
     console.log('Raw token result:', tokenResult);

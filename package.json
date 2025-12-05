@@ -29,5 +29,8 @@
     "react-native-screens": "^4.18.0",
     "socket.io-client": "^4.8.1"
   },
-  "private": true
+  "private": true,
+  "devDependencies": {
+    "eas-cli": "^16.28.0"
+  }
 }
