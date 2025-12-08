@@ -68,9 +68,17 @@ export async function getPlayingTeams(courtId) {
   console.log("Getting playing teams for:", courtId);
   const courtIdString = typeof courtId === 'string' ? courtId : String(courtId);
   const encodedCourtId = encodeURIComponent(courtIdString);
-  const res = await fetch(`${API}/courts/${encodedCourtId}/playing`);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
+  const url = `${API}/courts/${encodedCourtId}/playing`;
+  console.log("getPlayingTeams API call:", { courtIdString, encodedCourtId, url });
+  const res = await fetch(url);
+  if (!res.ok) {
+    const errorText = await res.text().catch(() => '');
+    console.error("getPlayingTeams error:", { status: res.status, statusText: res.statusText, body: errorText });
+    throw new Error(`HTTP ${res.status}: ${errorText || res.statusText}`);
+  }
+  const data = await res.json();
+  console.log("getPlayingTeams response:", { slots: data.slots, gameStartTime: data.gameStartTime });
+  return data;
 }
 
 export async function removePlayingTeam(courtId, entryId) {

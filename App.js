@@ -440,6 +440,22 @@ export default function App() {
       if (existingEntry) {
         // Device is already in the queue, go directly to queue screen
         console.log('Device already in queue, showing queue screen with existing position:', existingEntry.position);
+        // CRITICAL: Load slots FIRST before showing queue view
+        // This ensures people in slots are filtered out correctly
+        try {
+          const slotsResult = await getPlayingTeams(courtIdString);
+          const initialSlots = slotsResult.slots || [null, null];
+          setSlots(initialSlots);
+          slotsRef.current = initialSlots;
+          const teams = initialSlots.filter(slot => slot !== null);
+          setPlayingTeams(teams);
+          if (slotsResult.gameStartTime) {
+            setGameStartTime(slotsResult.gameStartTime);
+          }
+        } catch (error) {
+          console.error('Error loading slots when checking existing entry:', error);
+          // Continue anyway with empty slots
+        }
         setUserEntry(existingEntry);
         setQueue(currentQueue.queue);
         setCurrentView('queue');
@@ -553,6 +569,23 @@ export default function App() {
 
       const result = await joinQueue(courtIdString, entryId, displayName, deviceId);
       console.log('Join successful, result:', result);
+
+      // CRITICAL: Load slots FIRST before showing queue view
+      // This ensures people in slots are filtered out correctly when person 2 joins
+      try {
+        const slotsResult = await getPlayingTeams(courtIdString);
+        const initialSlots = slotsResult.slots || [null, null];
+        setSlots(initialSlots);
+        slotsRef.current = initialSlots;
+        const teams = initialSlots.filter(slot => slot !== null);
+        setPlayingTeams(teams);
+        if (slotsResult.gameStartTime) {
+          setGameStartTime(slotsResult.gameStartTime);
+        }
+      } catch (error) {
+        console.error('Error loading slots after joining queue:', error);
+        // Continue anyway with empty slots
+      }
 
       setUserEntry(result.entry);
       setQueue(result.queue);
@@ -1096,6 +1129,18 @@ export default function App() {
               // Filter out teams that are in slots
               const slotTeamIds = new Set(slots.filter(s => s !== null).map(s => s.entryId));
               const waitingQueue = queue.filter(entry => !slotTeamIds.has(entry.id));
+              
+              // Debug logging to see what's happening
+              if (queue.length > 0 && slots.some(s => s !== null)) {
+                console.log('Queue filtering debug:', {
+                  totalQueue: queue.length,
+                  waitingQueue: waitingQueue.length,
+                  slots: slots.map(s => s ? { entryId: s.entryId, display_name: s.display_name } : null),
+                  slotTeamIds: Array.from(slotTeamIds),
+                  queueEntries: queue.map(e => ({ id: e.id, display_name: e.display_name })),
+                  filteredOut: queue.filter(e => slotTeamIds.has(e.id)).map(e => ({ id: e.id, display_name: e.display_name }))
+                });
+              }
               
               if (waitingQueue.length === 0) {
                 return <Text style={styles.emptyQueue}>No one waiting in queue</Text>;

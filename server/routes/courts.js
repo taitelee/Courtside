@@ -93,8 +93,11 @@ r.get("/:id/playing", async (req, res) => {
   const { id } = req.params;
   const courtId = decodeURIComponent(id);
   try {
-    const playingTeams = await getPlayingTeams(courtId);
-    res.json({ playingTeams });
+    console.log("GET /playing called for courtId:", courtId);
+    const result = await getPlayingTeams(courtId);
+    console.log("GET /playing returning:", { slots: result.slots, gameStartTime: result.gameStartTime });
+    // Return the result directly (it already has slots and gameStartTime)
+    res.json(result);
   } catch (error) {
     console.error("Error getting playing teams:", error);
     res.status(500).json({ error: error.message });
