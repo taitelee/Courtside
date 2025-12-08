@@ -52,7 +52,7 @@ supabase
       const message = {
         to: tokenRow.expo_push_token,
         title: 'You\'re next!',
-        body: `You\'re now first in line for ${courtName}. Please return to the court within the next minute.`,
+        body: `You\'re now first in line for Demo Court. Please return to the court within the next minute.`,
         data: { courtId: newRow.court_id, entryId: newRow.id },
       };
 
