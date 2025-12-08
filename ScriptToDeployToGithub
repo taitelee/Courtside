@@ -1,0 +1,43 @@
+# Install once
+npx expo install react-dom react-native-web @expo/metro-runtime
+npm install -g gh-pages
+
+# Clear Metro cache & ensure web mode works
+npx expo start --clear
+# press "w" to verify web build works
+
+
+
+### CLEAN PREVIOUS GH-PAGES CACHE
+rm -rf .gh-pages-cache
+rm -rf ~/.cache/gh-pages
+rm -rf /tmp/gh-pages-*
+
+
+### CREATE WEB BUILD
+npx expo export --platform web
+
+
+### FIX INDEX.HTML PATHS
+sed -i 's|src="/_expo|src="_expo|g' dist/index.html
+sed -i 's|href="/favicon.ico"|href="./favicon.ico"|g' dist/index.html
+
+
+### FIX QR WORKER BUNDLE PATH
+# This is the correct working version — must include file path
+sed -i 's|"_expo/static/js/web/qr-scanner-worker|".\/_expo/static/js/web/qr-scanner-worker|g' dist/_expo/static/js/web/index-*.js
+
+
+### FIX OTHER ABSOLUTE _expo PATHS
+sed -i 's|"/_expo|".\/_expo|g' dist/_expo/static/js/web/index-*.js
+
+
+### FIX ALL ASSET PATHS
+find dist -type f -name "*.js" -exec sed -i 's|"/assets|".\/assets|g' {} \;
+
+# Confirm
+grep -Rn '"/assets' dist || echo "✓ No absolute asset paths left"
+
+
+### DEPLOY
+npx gh-pages -d dist
